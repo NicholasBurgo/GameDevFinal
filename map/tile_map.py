@@ -103,7 +103,8 @@ class TileMap:
                 elif tile == TILE_COUNTER:
                     color = COLOR_COUNTER
                 elif tile == TILE_NODE:
-                    color = COLOR_NODE
+                    # Nodes are invisible - render as floor
+                    color = COLOR_FLOOR
                 else:
                     color = COLOR_FLOOR
 

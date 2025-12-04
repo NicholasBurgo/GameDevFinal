@@ -29,13 +29,18 @@ class AIDialogue:
             print("ERROR: OpenAI library not installed. Install with: pip install openai")
             return
         
-        # Try to get API key from environment variable first, then fallback to hardcoded
+        # Try to get API key from environment variable first, then from file
         api_key = api_key or os.getenv("OPENAI_API_KEY")
         
-        # Fallback to hardcoded key (from user's curl command)
-        # NOTE: In production, this should be removed and only use env vars
+        # Fallback to reading from api_key.txt file (gitignored)
         if not api_key:
-            api_key = "API_KEY_REMOVED"
+            api_key_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "api_key.txt")
+            try:
+                if os.path.exists(api_key_path):
+                    with open(api_key_path, "r") as f:
+                        api_key = f.read().strip()
+            except Exception as e:
+                print(f"Warning: Could not read API key from file: {e}")
         
         try:
             self.client = OpenAI(api_key=api_key)

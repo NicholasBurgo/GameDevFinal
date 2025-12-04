@@ -20,3 +20,4 @@ class Litter:
         pygame.draw.rect(surface, COLOR_LITTER, rect)
 
 
+

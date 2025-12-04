@@ -41,8 +41,8 @@ CUSTOMER_RADIUS = PLAYER_RADIUS  # Same size as player
 CUSTOMER_SPEED = PLAYER_SPEED / 2.0
 
 # Collision sets
-SOLID_TILES = {TILE_WALL, TILE_SHELF, TILE_DOOR, TILE_COUNTER, TILE_NODE}
-# Customers can pass through doors, but not walls, shelves, counters, or nodes
-# Nodes are walkable (customers can stand on them) but are solid for collision
-CUSTOMER_SOLID_TILES = {TILE_WALL, TILE_SHELF, TILE_COUNTER, TILE_NODE}
+SOLID_TILES = {TILE_WALL, TILE_SHELF, TILE_DOOR, TILE_COUNTER}
+# Customers can pass through doors, but not walls, shelves, or counters
+# Nodes are walkable (customers can stand on them) and passable (no collision)
+CUSTOMER_SOLID_TILES = {TILE_WALL, TILE_SHELF, TILE_COUNTER}
 
