@@ -161,6 +161,17 @@ class Renderer:
     def __init__(self, screen: pygame.Surface) -> None:
         self.screen = screen
         self.video_player: VideoPlayer | None = None
+        self.venmo_bubble_rect: pygame.Rect | None = None  # Store Venmo bubble rect for click detection
+        
+        # Load phone hand background image
+        self.phonehand_image: pygame.Surface | None = None
+        try:
+            phonehand_path = "assets/imgs/PhoneHand.png"
+            loaded_image = pygame.image.load(phonehand_path)
+            self.phonehand_image = loaded_image
+        except (pygame.error, FileNotFoundError):
+            print(f"Warning: Could not load phone hand image: {phonehand_path}")
+            self.phonehand_image = None
 
     def clear(self) -> None:
         """Clear the screen with background color."""
@@ -270,6 +281,67 @@ class Renderer:
         
         return False
 
+    def _draw_iphone_frame(self, screen_width: int, screen_height: int) -> tuple[pygame.Rect, int, int]:
+        """
+        Draw iPhone frame/bezel and return the screen area bounds.
+        
+        Args:
+            screen_width: Full screen width
+            screen_height: Full screen height
+            
+        Returns:
+            Tuple of (screen_rect, screen_x, screen_y) where screen_rect is the iPhone screen area
+        """
+        # Draw phone hand background image behind everything if available
+        # EDIT PNG SIZE AND POSITION HERE:
+        if self.phonehand_image is not None:
+            # PNG SIZE: Change these values to adjust the image size
+            # Currently set to 58% of screen width (slightly bigger than half)
+            image_width = int(screen_width * 0.58)  # Slightly bigger than half width
+            original_width, original_height = self.phonehand_image.get_size()
+            aspect_ratio = original_height / original_width
+            new_height = int(image_width * aspect_ratio * 1.15)  # 15% taller than aspect ratio
+            scaled_image = pygame.transform.scale(self.phonehand_image, (image_width, new_height))
+            
+            # PNG POSITION: Change image_x and image_y to adjust position
+            # Positioned slightly to the left (subtract 50 pixels from center)
+            image_x = (screen_width - image_width) // 2 - 50  # Move 50px to the left
+            image_y = (screen_height - new_height) // 2  # Vertical position (0 = top, higher = lower)
+            self.screen.blit(scaled_image, (image_x, image_y))
+        
+        # iPhone proportions: approximately 9:19.5 aspect ratio (modern iPhone)
+        # Calculate iPhone frame size (leave some margin around edges)
+        bezel_width = min(screen_width, screen_height) * 0.08  # 8% bezel
+        iphone_width = screen_width - bezel_width * 2
+        iphone_height = iphone_width * (19.5 / 9)  # Maintain iPhone aspect ratio
+        
+        # If too tall, scale down based on height
+        if iphone_height > screen_height - bezel_width * 2:
+            iphone_height = screen_height - bezel_width * 2
+            iphone_width = iphone_height * (9 / 19.5)
+        
+        # Increase the screen height by 30px
+        iphone_height = iphone_height + 30
+        
+        # Center the iPhone screen (no bezel, just the screen area)
+        # Move screen down and to the right slightly (split the difference)
+        iphone_x = (screen_width - iphone_width) // 2 - 15  # Move 15px to the left (halfway back to center)
+        iphone_y = (screen_height - iphone_height) // 2 + 60  # Move 60px down (more down)
+        
+        # Calculate screen area directly (no bezel)
+        screen_padding = 0  # No padding since there's no bezel
+        screen_x = iphone_x
+        screen_y = iphone_y
+        screen_w = iphone_width
+        screen_h = iphone_height
+        
+        # Draw iPhone screen (white/light background)
+        screen_rect = pygame.Rect(screen_x, screen_y, screen_w, screen_h)
+        screen_bg_color = (221, 224, 233)  # Color #dde0e9 for phone screen
+        pygame.draw.rect(self.screen, screen_bg_color, screen_rect, border_radius=20)
+        
+        return screen_rect, screen_x, screen_y
+
     def draw_tax_man_screen(
         self, 
         tax_amount: int, 
@@ -277,10 +349,11 @@ class Renderer:
         ai_response: str | None = None,
         awaiting_response: bool = False,
         input_mode: bool = False,
-        player_argument: str = ""
+        player_argument: str = "",
+        conversation: list[dict[str, str]] = None
     ) -> None:
         """
-        Draw tax man screen with menu options.
+        Draw tax man screen with menu options inside an iPhone frame.
         
         Args:
             tax_amount: Amount of tax to pay
@@ -289,106 +362,288 @@ class Renderer:
             awaiting_response: Whether waiting for AI response
             input_mode: Whether player is typing their argument
             player_argument: The text the player has typed
+            conversation: List of conversation messages [{"sender": "player"/"boss", "message": "..."}, ...]
         """
+        if conversation is None:
+            conversation = []
+        # Reset Venmo bubble rect (will be set if we draw it)
+        self.venmo_bubble_rect = None
+        
         # Fill with black background
         self.screen.fill(COLOR_DAY_OVER_BG)
         
         screen_width = self.screen.get_width()
         screen_height = self.screen.get_height()
         
-        # Create font for the tax man text
-        large_font = pygame.font.SysFont(None, 48)
-        medium_font = pygame.font.SysFont(None, 36)
-        small_font = pygame.font.SysFont(None, 24)
+        # Draw iPhone frame and get screen bounds
+        screen_rect, screen_x, screen_y = self._draw_iphone_frame(screen_width, screen_height)
+        screen_w = screen_rect.width
+        screen_h = screen_rect.height
         
-        # Title
-        title_text = "The Tax Man Arrives..."
-        title_surface = large_font.render(title_text, True, COLOR_DAY_OVER_TEXT)
-        title_rect = title_surface.get_rect(center=(screen_width // 2, screen_height // 4))
+        # Create font for the tax man text (slightly smaller for iPhone screen)
+        large_font = pygame.font.SysFont(None, 36)
+        medium_font = pygame.font.SysFont(None, 28)
+        small_font = pygame.font.SysFont(None, 20)
+        
+        # Use dark text color for light iPhone background
+        text_color = (30, 30, 30)
+        
+        # Title (positioned within iPhone screen)
+        title_text = "Tax Dude"
+        title_surface = large_font.render(title_text, True, text_color)
+        title_rect = title_surface.get_rect(center=(screen_x + screen_w // 2, screen_y + 30))
         self.screen.blit(title_surface, title_rect)
         
-        # Tax amount
-        tax_text = f"Tax Due: {tax_amount} coins"
-        tax_surface = medium_font.render(tax_text, True, COLOR_DAY_OVER_TEXT)
-        tax_rect = tax_surface.get_rect(center=(screen_width // 2, screen_height // 4 + 60))
-        self.screen.blit(tax_surface, tax_rect)
+        # Draw "You Owe" text in a message bubble (like a text message from Tax Dude)
+        tax_text = f"You Owe: {tax_amount} dodge coins"
+        max_tax_width = screen_w - 40
+        tax_lines = self._wrap_text(tax_text, medium_font, max_tax_width - 20, text_color)
         
-        # Show AI response if available
-        if ai_response:
-            # Draw AI response in a box
-            response_y = screen_height // 2 - 40
-            response_lines = self._wrap_text(ai_response, small_font, screen_width - 100)
-            
-            for i, line in enumerate(response_lines):
-                line_surface = small_font.render(line, True, COLOR_DAY_OVER_TEXT)
-                line_rect = line_surface.get_rect(center=(screen_width // 2, response_y + i * 30))
-                self.screen.blit(line_surface, line_rect)
-            
-            # Instruction to continue
-            instruction = "Press any key to continue..."
-            instruction_surface = small_font.render(instruction, True, COLOR_DAY_OVER_TEXT)
-            instruction_rect = instruction_surface.get_rect(center=(screen_width // 2, screen_height - 60))
-            self.screen.blit(instruction_surface, instruction_rect)
-        elif awaiting_response:
-            # Show loading message
-            loading_text = "The tax man is thinking..."
-            loading_surface = small_font.render(loading_text, True, COLOR_DAY_OVER_TEXT)
-            loading_rect = loading_surface.get_rect(center=(screen_width // 2, screen_height // 2))
-            self.screen.blit(loading_surface, loading_rect)
-        elif input_mode:
-            # Draw text input box
-            input_box_width = screen_width - 100
-            input_box_height = 60
-            input_box_x = (screen_width - input_box_width) // 2
-            input_box_y = screen_height // 2 - 30
-            
-            # Draw input box background
-            input_box_rect = pygame.Rect(input_box_x, input_box_y, input_box_width, input_box_height)
-            pygame.draw.rect(self.screen, (40, 40, 40), input_box_rect)
-            pygame.draw.rect(self.screen, COLOR_DAY_OVER_TEXT, input_box_rect, 2)
-            
-            # Draw prompt
-            prompt_text = "State your argument:"
-            prompt_surface = small_font.render(prompt_text, True, COLOR_DAY_OVER_TEXT)
-            prompt_rect = prompt_surface.get_rect(center=(screen_width // 2, input_box_y - 30))
-            self.screen.blit(prompt_surface, prompt_rect)
-            
-            # Draw player's input text with cursor
-            input_text = player_argument + "_"  # Cursor
-            # Wrap text if too long
-            input_lines = self._wrap_text(input_text, small_font, input_box_width - 20)
-            
-            for i, line in enumerate(input_lines):
-                line_surface = small_font.render(line, True, COLOR_DAY_OVER_TEXT)
-                line_rect = line_surface.get_rect()
-                line_rect.left = input_box_x + 10
-                line_rect.centery = input_box_y + (i + 1) * (input_box_height // (len(input_lines) + 1))
-                self.screen.blit(line_surface, line_rect)
-            
-            # Instructions
-            instruction = "Type your argument, then press ENTER to submit (ESC to cancel)"
-            instruction_surface = small_font.render(instruction, True, COLOR_DAY_OVER_TEXT)
-            instruction_rect = instruction_surface.get_rect(center=(screen_width // 2, screen_height - 60))
-            self.screen.blit(instruction_surface, instruction_rect)
+        # Calculate bubble size for tax amount
+        bubble_padding = 15
+        tax_bubble_height = len(tax_lines) * 32 + bubble_padding * 2
+        if tax_lines:
+            max_line_width = max([medium_font.size(line)[0] for line in tax_lines])
+            tax_bubble_width = min(max_tax_width * 0.7, max(200, max_line_width + bubble_padding * 2))
         else:
-            # Draw menu options
-            menu_y = screen_height // 2
-            options = ["Pay Tax", "Argue"]
+            tax_bubble_width = 200
+        
+        # Position tax bubble to the left (like a received message)
+        left_margin = 20
+        tax_bubble_x = screen_x + left_margin
+        tax_bubble_y = screen_y + 80
+        
+        # Draw name label "Tax Dude" above the bubble, left-aligned
+        name_font = pygame.font.SysFont(None, 18)
+        name_text = "Tax Dude"
+        name_surface = name_font.render(name_text, True, (100, 100, 100))  # Gray color for name
+        name_rect = name_surface.get_rect()
+        name_rect.left = tax_bubble_x  # Left-align with bubble
+        name_rect.bottom = tax_bubble_y - 5  # 5 pixels above bubble
+        self.screen.blit(name_surface, name_rect)
+        
+        # Draw rounded message bubble (gray, like received message)
+        tax_bubble_rect = pygame.Rect(tax_bubble_x, tax_bubble_y, tax_bubble_width, tax_bubble_height)
+        bubble_color = (220, 220, 220)  # Light gray for received message
+        pygame.draw.rect(self.screen, bubble_color, tax_bubble_rect, border_radius=15)
+        
+        # Draw text inside bubble (dark text on gray background, left-aligned within bubble)
+        for i, line in enumerate(tax_lines):
+            line_surface = medium_font.render(line, True, text_color)
+            line_rect = line_surface.get_rect()
+            line_rect.left = tax_bubble_x + bubble_padding  # Left-aligned
+            line_rect.centery = tax_bubble_y + bubble_padding + i * 32 + 16
+            self.screen.blit(line_surface, line_rect)
+        
+        # Draw Venmo message bubble below the "You Owe" message
+        venmo_request_text = f"Requesting {tax_amount} dodge coins"
+        venmo_url = "venmo.com/tax-dude/pay"
+        
+        # Combine text with URL (URL on new line)
+        venmo_full_text = f"{venmo_request_text}\n{venmo_url}"
+        venmo_lines = venmo_full_text.split('\n')
+        
+        # Calculate Venmo bubble size (need to account for wrapped text if URL is too long)
+        venmo_max_width = max_tax_width - 20
+        wrapped_venmo_lines = []
+        for line in venmo_lines:
+            wrapped = self._wrap_text(line, medium_font, venmo_max_width - bubble_padding * 2, text_color)
+            wrapped_venmo_lines.extend(wrapped)
+        
+        venmo_bubble_height = len(wrapped_venmo_lines) * 32 + bubble_padding * 2
+        if wrapped_venmo_lines:
+            max_line_width = max([medium_font.size(line)[0] for line in wrapped_venmo_lines])
+            venmo_bubble_width = min(max_tax_width * 0.7, max(200, max_line_width + bubble_padding * 2))
+        else:
+            venmo_bubble_width = 200
+        
+        # Position Venmo bubble below the tax bubble
+        venmo_bubble_x = screen_x + left_margin
+        venmo_bubble_y = tax_bubble_y + tax_bubble_height + 10  # 10 pixels spacing
+        
+        # Draw rounded message bubble for Venmo (gray, like received message)
+        venmo_bubble_rect = pygame.Rect(venmo_bubble_x, venmo_bubble_y, venmo_bubble_width, venmo_bubble_height)
+        self.venmo_bubble_rect = venmo_bubble_rect  # Store for click detection
+        pygame.draw.rect(self.screen, bubble_color, venmo_bubble_rect, border_radius=15)
+        
+        # Draw text inside Venmo bubble
+        for i, line in enumerate(wrapped_venmo_lines):
+            # Make URL text slightly blue to look like a link
+            if line == venmo_url or venmo_url in line:
+                url_color = (0, 100, 255)  # Blue color for URL
+            else:
+                url_color = text_color
+            line_surface = medium_font.render(line, True, url_color)
+            line_rect = line_surface.get_rect()
+            line_rect.left = venmo_bubble_x + bubble_padding  # Left-aligned
+            line_rect.centery = venmo_bubble_y + bubble_padding + i * 32 + 16
+            self.screen.blit(line_surface, line_rect)
+        
+        # Draw conversation history (chat messages)
+        conversation_start_y = venmo_bubble_y + venmo_bubble_height + 20
+        input_box_top = screen_y + screen_h - 70  # Position where input box starts
+        max_conversation_height = input_box_top - conversation_start_y - 20  # Available space for messages
+        
+        # First pass: calculate total height of all messages
+        total_height = 0
+        message_heights = []
+        max_msg_width = max_tax_width - 20
+        max_bubble_width = int(max_msg_width * 0.7)
+        available_text_width = max_bubble_width - bubble_padding * 2
+        
+        for msg in conversation:
+            message = msg.get("message", "")
+            msg_lines = self._wrap_text(message, medium_font, available_text_width, text_color)
+            if msg_lines:
+                max_line_width = max([medium_font.size(line)[0] for line in msg_lines])
+                msg_bubble_width = min(max_bubble_width, max(200, max_line_width + bubble_padding * 2))
+                actual_text_width = msg_bubble_width - bubble_padding * 2
+                msg_lines = self._wrap_text(message, medium_font, actual_text_width, text_color)
+            msg_bubble_height = len(msg_lines) * 32 + bubble_padding * 2
+            message_heights.append(msg_bubble_height)
+            total_height += msg_bubble_height + 10  # Include spacing between messages
+        
+        # Calculate scroll offset to keep newest messages visible at bottom
+        scroll_offset = 0
+        if total_height > max_conversation_height:
+            # Scroll up so the bottom of the conversation aligns with the input box
+            scroll_offset = total_height - max_conversation_height
+        
+        # Track if we've shown the "Tax Dude" name label yet (only show on first boss message)
+        name_font = pygame.font.SysFont(None, 18)
+        tax_dude_name_shown = False
+        
+        # Draw conversation messages with scroll offset
+        current_y = conversation_start_y - scroll_offset
+        for idx, msg in enumerate(conversation):
+            sender = msg.get("sender", "boss")
+            message = msg.get("message", "")
             
-            for i, option in enumerate(options):
-                color = (255, 255, 0) if i == menu_selection else COLOR_DAY_OVER_TEXT
-                option_text = f"{'> ' if i == menu_selection else '  '}{option}"
-                option_surface = medium_font.render(option_text, True, color)
-                option_rect = option_surface.get_rect(center=(screen_width // 2, menu_y + i * 50))
-                self.screen.blit(option_surface, option_rect)
+            # Determine max bubble width (70% of available width, matching initial bubbles)
+            max_msg_width = max_tax_width - 20
+            max_bubble_width = int(max_msg_width * 0.7)
             
-            # Instructions
-            instruction = "Use UP/DOWN to select, ENTER to choose"
-            instruction_surface = small_font.render(instruction, True, COLOR_DAY_OVER_TEXT)
-            instruction_rect = instruction_surface.get_rect(center=(screen_width // 2, screen_height - 60))
-            self.screen.blit(instruction_surface, instruction_rect)
+            # Wrap text to fit within the bubble (accounting for padding)
+            available_text_width = max_bubble_width - bubble_padding * 2
+            msg_lines = self._wrap_text(message, medium_font, available_text_width, text_color)
+            
+            # Calculate actual bubble width based on wrapped text
+            if msg_lines:
+                max_line_width = max([medium_font.size(line)[0] for line in msg_lines])
+                msg_bubble_width = min(max_bubble_width, max(200, max_line_width + bubble_padding * 2))
+            else:
+                msg_bubble_width = 200
+            
+            # Re-wrap if needed to ensure text fits (in case we had to adjust bubble width)
+            if msg_lines:
+                actual_text_width = msg_bubble_width - bubble_padding * 2
+                msg_lines = self._wrap_text(message, medium_font, actual_text_width, text_color)
+            
+            # Calculate bubble height (matching initial bubble spacing: 32px per line)
+            msg_bubble_height = message_heights[idx] if idx < len(message_heights) else len(msg_lines) * 32 + bubble_padding * 2
+            
+            # Position based on sender (player on right, boss on left)
+            if sender == "player":
+                msg_bubble_x = screen_x + screen_w - msg_bubble_width - left_margin
+                msg_bubble_color = (0, 122, 255)  # Blue for sent messages
+                msg_text_color = (255, 255, 255)  # White text
+            else:  # boss
+                msg_bubble_x = screen_x + left_margin
+                msg_bubble_color = (220, 220, 220)  # Gray for received messages
+                msg_text_color = text_color
+                
+                # Show "Tax Dude" name label only on first boss message
+                if not tax_dude_name_shown:
+                    name_text = "Tax Dude"
+                    name_surface = name_font.render(name_text, True, (100, 100, 100))  # Gray color for name
+                    name_rect = name_surface.get_rect()
+                    name_rect.left = msg_bubble_x
+                    name_rect.bottom = current_y - 5  # 5 pixels above bubble
+                    visible_top = conversation_start_y
+                    visible_bottom = input_box_top
+                    if current_y + msg_bubble_height > visible_top and current_y < visible_bottom:
+                        self.screen.blit(name_surface, name_rect)
+                    tax_dude_name_shown = True
+            
+            # Only draw if within visible area (accounting for scroll)
+            visible_top = conversation_start_y
+            visible_bottom = input_box_top
+            if current_y + msg_bubble_height > visible_top and current_y < visible_bottom:
+                # Draw message bubble
+                msg_bubble_rect = pygame.Rect(msg_bubble_x, current_y, msg_bubble_width, msg_bubble_height)
+                pygame.draw.rect(self.screen, msg_bubble_color, msg_bubble_rect, border_radius=15)
+                
+                # Draw text inside bubble (matching initial bubble text positioning)
+                for i, line in enumerate(msg_lines):
+                    line_surface = medium_font.render(line, True, msg_text_color)
+                    line_rect = line_surface.get_rect()
+                    if sender == "player":
+                        line_rect.right = msg_bubble_x + msg_bubble_width - bubble_padding
+                    else:
+                        line_rect.left = msg_bubble_x + bubble_padding
+                    line_rect.centery = current_y + bubble_padding + i * 32 + 16
+                    self.screen.blit(line_surface, line_rect)
+            
+            current_y += msg_bubble_height + 10  # Space between messages
+        
+        # Show "thinking" indicator if awaiting response
+        if awaiting_response:
+            thinking_y = current_y if current_y > conversation_start_y else conversation_start_y
+            # Make sure thinking indicator is visible (within scrollable area)
+            if thinking_y < input_box_top - 20:
+                thinking_text = "Tax Dude is typing..."
+                thinking_surface = small_font.render(thinking_text, True, (150, 150, 150))
+                thinking_rect = thinking_surface.get_rect()
+                thinking_rect.left = screen_x + left_margin
+                thinking_rect.top = thinking_y
+                if thinking_y > conversation_start_y:
+                    self.screen.blit(thinking_surface, thinking_rect)
+            current_y = thinking_y + 30
+        
+        # Always draw input box at the bottom
+        input_box_height = 50
+        input_box_margin = 10
+        input_box_y = screen_y + screen_h - input_box_height - input_box_margin
+        input_box_width = screen_w - 40
+        input_box_x = screen_x + (screen_w - input_box_width) // 2
+        
+        # Draw input box background (white with border)
+        input_box_rect = pygame.Rect(input_box_x, input_box_y, input_box_width, input_box_height)
+        pygame.draw.rect(self.screen, (255, 255, 255), input_box_rect, border_radius=10)
+        pygame.draw.rect(self.screen, (200, 200, 200), input_box_rect, width=2, border_radius=10)
+        
+        # Draw player's input text with cursor
+        input_text = player_argument + "_"  # Cursor
+        input_lines = self._wrap_text(input_text, small_font, input_box_width - 20, text_color)
+        
+        for i, line in enumerate(input_lines):
+            line_surface = small_font.render(line, True, text_color)
+            line_rect = line_surface.get_rect()
+            line_rect.left = input_box_x + 15
+            line_rect.centery = input_box_y + input_box_height // 2 + i * 20 - (len(input_lines) - 1) * 10
+            self.screen.blit(line_surface, line_rect)
+        
+        # Instructions at very bottom
+        instruction = "Type a message and press ENTER to send. Click Venmo to pay."
+        instruction_surface = pygame.font.SysFont(None, 16).render(instruction, True, (150, 150, 150))
+        instruction_rect = instruction_surface.get_rect(center=(screen_x + screen_w // 2, screen_y + screen_h - 2))
+        self.screen.blit(instruction_surface, instruction_rect)
     
-    def _wrap_text(self, text: str, font: pygame.font.Font, max_width: int) -> list[str]:
+    def is_venmo_bubble_clicked(self, mouse_pos: tuple[int, int]) -> bool:
+        """
+        Check if the mouse position is within the Venmo bubble.
+        
+        Args:
+            mouse_pos: (x, y) tuple of mouse position
+            
+        Returns:
+            True if clicked on Venmo bubble, False otherwise
+        """
+        if self.venmo_bubble_rect is None:
+            return False
+        return self.venmo_bubble_rect.collidepoint(mouse_pos)
+    
+    def _wrap_text(self, text: str, font: pygame.font.Font, max_width: int, text_color: tuple[int, int, int] = COLOR_DAY_OVER_TEXT) -> list[str]:
         """Wrap text to fit within max_width."""
         words = text.split()
         lines = []
@@ -396,7 +651,7 @@ class Renderer:
         
         for word in words:
             test_line = ' '.join(current_line + [word])
-            test_surface = font.render(test_line, True, COLOR_DAY_OVER_TEXT)
+            test_surface = font.render(test_line, True, text_color)
             if test_surface.get_width() <= max_width:
                 current_line.append(word)
             else:

@@ -1,5 +1,6 @@
 """Main game state management."""
 
+import threading
 from typing import Union
 
 import pygame
@@ -71,8 +72,10 @@ class GameState:
         self.tax_man_ai_response: str | None = None  # Store AI response when arguing
         self.tax_man_awaiting_response = False  # Track if waiting for AI response
         self.tax_man_tax_amount = 0  # Calculate tax amount
-        self.tax_man_input_mode = False  # Track if player is typing their argument
-        self.tax_man_player_argument = ""  # Store player's typed argument
+        self.tax_man_input_mode = True  # Always in input mode for chat
+        self.tax_man_player_argument = ""  # Store player's typed message
+        self.tax_man_conversation: list[dict[str, str]] = []  # Conversation history: [{"sender": "player"/"boss", "message": "..."}, ...]
+        self._pending_ai_request = None  # Track pending AI request thread
         
         # Initialize AI dialogue system
         self.ai_dialogue = AIDialogue()
@@ -185,15 +188,55 @@ class GameState:
                     except Exception as e:
                         print(f"Warning: Could not play day over sound: {e}")
 
-    def handle_event(self, event: pygame.event.Event) -> bool:
+    def handle_event(self, event: pygame.event.Event, renderer=None) -> bool:
         """
         Handle pygame events. Returns True if event was handled and should stop propagation.
+        
+        Args:
+            event: The pygame event to handle
+            renderer: Optional Renderer instance for checking Venmo bubble clicks
         """
         if event.type == pygame.QUIT:
             return True
+        elif event.type == pygame.MOUSEBUTTONDOWN:
+            # Check if clicking on Venmo bubble in tax_man state
+            if self.game_state == "tax_man" and renderer is not None:
+                mouse_pos = event.pos
+                if renderer.is_venmo_bubble_clicked(mouse_pos):
+                    # Clicked on Venmo bubble - pay tax and continue
+                    self.collected_coins = max(0, self.collected_coins - self.tax_man_tax_amount)
+                    self._start_new_day()
+                    return False  # Event handled but don't stop propagation
         elif event.type == pygame.KEYDOWN:
             if event.key == pygame.K_ESCAPE:
                 return True
+            # Handle "I" key to end the day early
+            if event.key == pygame.K_i:
+                if self.game_state == "playing":
+                    # End the day - force customers to leave
+                    self.game_state = "waiting_for_customers"
+                    for customer in self.customers:
+                        if customer.state != "leaving":
+                            customer.state = "leaving"
+                            customer.path = None
+                            customer.path_index = 0
+                elif self.game_state == "waiting_for_customers":
+                    # Skip to collection time
+                    if len(self.customers) == 0:
+                        self.game_state = "collection_time"
+                        self.collection_timer = 0.0
+                elif self.game_state == "collection_time":
+                    # Skip directly to day over animation
+                    self.game_state = "day_over_animation"
+                    self.day_over_animation_progress = 0.0
+                    self.video_playing = True
+                    # Play sound when entering animation state
+                    if not self.sound_played and self.day_over_sound is not None:
+                        try:
+                            self.day_over_sound.play()
+                            self.sound_played = True
+                        except Exception as e:
+                            print(f"Warning: Could not play day over sound: {e}")
             # Handle day over and tax man screen transitions
             if self.game_state == "day_over_animation":
                 # Any key press transitions to tax man screen
@@ -203,8 +246,9 @@ class GameState:
                 self.tax_man_menu_selection = 0
                 self.tax_man_ai_response = None
                 self.tax_man_awaiting_response = False
-                self.tax_man_input_mode = False
+                self.tax_man_input_mode = True  # Enable input mode for chat
                 self.tax_man_player_argument = ""
+                self.tax_man_conversation = []  # Initialize conversation history
             elif self.game_state == "day_over":
                 # Legacy state - transition to tax man
                 self.game_state = "tax_man"
@@ -212,40 +256,46 @@ class GameState:
                 self.tax_man_menu_selection = 0
                 self.tax_man_ai_response = None
                 self.tax_man_awaiting_response = False
-                self.tax_man_input_mode = False
+                self.tax_man_input_mode = True  # Enable input mode for chat
                 self.tax_man_player_argument = ""
+                self.tax_man_conversation = []  # Initialize conversation history
             elif self.game_state == "tax_man":
-                # Handle tax man menu navigation and text input
-                if self.tax_man_awaiting_response:
-                    # If waiting for AI response, any key continues (but response should be ready)
-                    if self.tax_man_ai_response:
-                        # AI responded, deduct tax anyway (argument failed)
-                        self.collected_coins = max(0, self.collected_coins - self.tax_man_tax_amount)
-                        self._start_new_day()
-                elif self.tax_man_ai_response:
-                    # AI response shown, any key continues
-                    self.collected_coins = max(0, self.collected_coins - self.tax_man_tax_amount)
-                    self._start_new_day()
-                elif self.tax_man_input_mode:
-                    # Player is typing their argument
+                # Handle chat input in tax man screen
+                if self.tax_man_input_mode:
                     if event.key == pygame.K_RETURN:
-                        # Submit argument
+                        # Send message instantly
                         if self.tax_man_player_argument.strip():
-                            # Generate AI response with player's argument
+                            # Store message and clear input immediately
+                            player_msg = self.tax_man_player_argument.strip()
+                            self.tax_man_player_argument = ""  # Clear input instantly so it's visible immediately
+                            
+                            # Add player message to conversation immediately
+                            self.tax_man_conversation.append({
+                                "sender": "player",
+                                "message": player_msg
+                            })
+                            
+                            # Set awaiting response flag
                             self.tax_man_awaiting_response = True
-                            self.tax_man_ai_response = self.ai_dialogue.generate_tax_argument(
-                                self.collected_coins, self.current_day, self.tax_man_player_argument
-                            )
-                            self.tax_man_awaiting_response = False
-                            self.tax_man_input_mode = False
-                        else:
-                            # Empty argument, go back to menu
-                            self.tax_man_input_mode = False
-                            self.tax_man_player_argument = ""
-                    elif event.key == pygame.K_ESCAPE:
-                        # Cancel input, go back to menu
-                        self.tax_man_input_mode = False
-                        self.tax_man_player_argument = ""
+                            
+                            # Make API call in a separate thread so it doesn't block the screen update
+                            def get_ai_response():
+                                boss_response = self.ai_dialogue.generate_tax_argument(
+                                    self.collected_coins, 
+                                    self.current_day, 
+                                    player_msg
+                                )
+                                # Add boss response to conversation (thread-safe, only called from one thread)
+                                self.tax_man_conversation.append({
+                                    "sender": "boss",
+                                    "message": boss_response
+                                })
+                                self.tax_man_awaiting_response = False
+                                self.tax_man_ai_response = boss_response
+                            
+                            # Start the API call in a background thread
+                            self._pending_ai_request = threading.Thread(target=get_ai_response, daemon=True)
+                            self._pending_ai_request.start()
                     elif event.key == pygame.K_BACKSPACE:
                         # Delete last character
                         self.tax_man_player_argument = self.tax_man_player_argument[:-1]
@@ -253,22 +303,6 @@ class GameState:
                         # Add character (limit to 200 characters)
                         if len(self.tax_man_player_argument) < 200:
                             self.tax_man_player_argument += event.unicode
-                else:
-                    # Menu navigation
-                    if event.key in (pygame.K_UP, pygame.K_w):
-                        self.tax_man_menu_selection = (self.tax_man_menu_selection - 1) % 2
-                    elif event.key in (pygame.K_DOWN, pygame.K_s):
-                        self.tax_man_menu_selection = (self.tax_man_menu_selection + 1) % 2
-                    elif event.key == pygame.K_RETURN or event.key == pygame.K_SPACE:
-                        # Select option
-                        if self.tax_man_menu_selection == 0:
-                            # Pay option
-                            self.collected_coins = max(0, self.collected_coins - self.tax_man_tax_amount)
-                            self._start_new_day()
-                        else:
-                            # Argue option - enter text input mode
-                            self.tax_man_input_mode = True
-                            self.tax_man_player_argument = ""
         return False
 
     def _start_new_day(self) -> None:
@@ -293,8 +327,9 @@ class GameState:
         self.tax_man_ai_response = None
         self.tax_man_awaiting_response = False
         self.tax_man_tax_amount = 0
-        self.tax_man_input_mode = False
+        self.tax_man_input_mode = True
         self.tax_man_player_argument = ""
+        self.tax_man_conversation = []
 
     def _compute_shelf_groups(self) -> list[tuple[pygame.Vector2, list[pygame.Vector2]]]:
         """

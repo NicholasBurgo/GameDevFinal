@@ -64,7 +64,7 @@ def main() -> None:
 
         # Handle events
         for event in pygame.event.get():
-            if game_state.handle_event(event):
+            if game_state.handle_event(event, renderer=renderer):
                 running = False
 
         # Update game state
@@ -91,6 +91,7 @@ def main() -> None:
             # Update HUD lines with game info
             hud_lines = [
                 "Use WASD or arrow keys to move.",
+                "Press I to end the day early.",
                 "ESC or window close to quit.",
             ]
             if game_state.game_state == "waiting_for_customers":
@@ -116,7 +117,8 @@ def main() -> None:
                 ai_response=game_state.tax_man_ai_response,
                 awaiting_response=game_state.tax_man_awaiting_response,
                 input_mode=game_state.tax_man_input_mode,
-                player_argument=game_state.tax_man_player_argument
+                player_argument=game_state.tax_man_player_argument,
+                conversation=game_state.tax_man_conversation
             )
 
         pygame.display.flip()
