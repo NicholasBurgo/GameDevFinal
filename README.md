@@ -1,4 +1,4 @@
-## Pygame Store Environment
+## Tax Evasion Simulator
 
 A simple top-down store environment built with Pygame. The world is made of tiles (floor, walls, shelves), and you control a circular player that walks around the store and collides with walls and shelves.
 

@@ -1,11 +1,11 @@
-"""Dodge coin entity (cash dropped by customers)."""
+"""Litter entity."""
 
 import pygame
 
-from config import COLOR_CASH, TILE_SIZE
+from config import COLOR_LITTER, TILE_SIZE
 
 
-class Cash:
+class Litter:
     def __init__(self, pos: pygame.Vector2) -> None:
         self.pos = pygame.Vector2(pos)
 
@@ -17,7 +17,6 @@ class Cash:
             size,
             size,
         )
-        pygame.draw.rect(surface, COLOR_CASH, rect)
-
+        pygame.draw.rect(surface, COLOR_LITTER, rect)
 
 

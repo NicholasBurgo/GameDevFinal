@@ -1,4 +1,4 @@
-"""Customer entity with AI behavior."""
+"""Thief customer entity that steals dodge coins and leaves."""
 
 import math
 import random
@@ -6,11 +6,12 @@ import random
 import pygame
 
 from config import COLOR_CUSTOMER, CUSTOMER_RADIUS, CUSTOMER_SPEED, FPS, TILE_SIZE
+from entities.cash import Cash
 from map import find_path
 
 
-class Customer:
-    """Simple customer AI: enter door -> go to shelf -> browse around shelf -> drop dodge coin -> leave."""
+class ThiefCustomer:
+    """Thief customer AI: enter door -> browse like customer -> find dodge coin -> steal one dodge coin -> leave."""
 
     def __init__(
         self,
@@ -21,10 +22,10 @@ class Customer:
         tile_map=None,  # Tile map for pathfinding
         node_targets: list[pygame.Vector2] = None,  # Node positions customers can buy from
     ) -> None:
-        # Spawn at the door position (door tiles are walkable for customers)
+        # Spawn at the door position
         self.position = pygame.Vector2(door_pos)
         self.radius = CUSTOMER_RADIUS
-        self.color = COLOR_CUSTOMER
+        self.color = COLOR_CUSTOMER  # Same color as regular customers
 
         self.door_pos = pygame.Vector2(door_pos)
         self.shelf_targets = shelf_targets or [self.door_pos]
@@ -58,20 +59,16 @@ class Customer:
             shelf_key = (self.shelf_pos.x, self.shelf_pos.y)
             if shelf_key in shelf_browsing_positions:
                 self.browsing_positions = shelf_browsing_positions[shelf_key]
-        # Fallback: if no browsing positions provided, use empty list (will use old method)
-
-        # Browsing around shelf
-        self.browsing_time = random.uniform(3.0, 8.0)  # Total time to browse
+        
+        # Browsing around shelf first (like regular customer)
+        self.browsing_time = random.uniform(2.0, 5.0)  # Browse for a bit before stealing
         self.browsing_elapsed = 0.0
         self.browsing_target: pygame.Vector2 | None = None
         self.shelf_target: pygame.Vector2 | None = None  # Target position to reach shelf area
         
-        # Human-like behavior for nodes
-        self.look_around_timer: float = 0.0
-        self.look_around_delay: float = random.uniform(0.5, 2.0)  # Random pauses to look around
-        self.pause_timer: float = 0.0
-        self.is_paused: bool = False
-        self.approaching_node: bool = False  # Track if we're close to node
+        # Target dodge coin to steal
+        self.target_cash: Cash | None = None
+        self.target_cash_pos: pygame.Vector2 | None = None
 
         # A* pathfinding
         self.path: list[pygame.Vector2] | None = None
@@ -79,14 +76,19 @@ class Customer:
         self._last_path_recompute_pos: pygame.Vector2 | None = None
         self._stuck_timer: float = 0.0
         self._last_position: pygame.Vector2 = pygame.Vector2(self.position)
-        self._last_target_distance: float = float('inf')
-        self._progress_timer: float = 0.0
 
         # Leaving target (outside the door to the right)
         self.leave_pos = pygame.Vector2(self.door_pos.x + TILE_SIZE * 2.0, self.door_pos.y)
 
+        # Human-like behavior for nodes
+        self.look_around_timer: float = 0.0
+        self.look_around_delay: float = random.uniform(0.5, 2.0)
+        self.pause_timer: float = 0.0
+        self.is_paused: bool = False
+        self.approaching_node: bool = False
+
         self.finished = False
-        self.drop_cash = False
+        self.stole_cash = False  # Flag to indicate dodge coin was stolen
 
     @property
     def rect(self) -> pygame.Rect:
@@ -98,7 +100,8 @@ class Customer:
             self.radius * 2,
         )
 
-    def update(self, dt: float, solid_rects: list[pygame.Rect], door_rects: list[pygame.Rect] = None) -> None:
+    def update(self, dt: float, solid_rects: list[pygame.Rect], cash_items: list[Cash], door_rects: list[pygame.Rect] = None) -> None:
+        """Update thief behavior. Needs access to dodge coins to find targets."""
         if door_rects is None:
             door_rects = []
         if self.state == "entering":
@@ -119,91 +122,59 @@ class Customer:
                         self.shelf_target = self.shelf_pos
                     # Compute path using A*
                     self._compute_path(self.shelf_target)
+        
         elif self.state == "to_node":
-            # Move towards the node with human-like behavior
+            # Move towards the node with human-like behavior (thief is more cautious)
             if self.node_pos is None:
                 self.state = "leaving"
                 self._compute_path(self.leave_pos)
             else:
-                # Check distance to node
                 distance_to_node = (self.position - self.node_pos).length()
                 
-                # If close to node, start approaching behavior (slow down, look around)
-                if distance_to_node < TILE_SIZE * 2.0:
+                # Thief looks around more when approaching
+                if distance_to_node < TILE_SIZE * 2.5:
                     self.approaching_node = True
-                    # Occasionally pause to look around
                     self.look_around_timer += dt
                     if self.look_around_timer >= self.look_around_delay and not self.is_paused:
-                        # Pause for a moment to look around
                         self.is_paused = True
-                        self.pause_timer = random.uniform(0.3, 0.8)  # Short pause
+                        self.pause_timer = random.uniform(0.4, 1.0)  # Longer pauses (more cautious)
                         self.look_around_timer = 0.0
-                        self.look_around_delay = random.uniform(0.5, 2.0)  # Next pause delay
+                        self.look_around_delay = random.uniform(0.6, 2.5)
                     
-                    # If paused, don't move
                     if self.is_paused:
                         self.pause_timer -= dt
                         if self.pause_timer <= 0:
                             self.is_paused = False
                     else:
-                        # Move slowly when approaching (more careful)
-                        if self._follow_path(dt * 0.7, solid_rects, self.node_pos, proximity_threshold=TILE_SIZE * 0.5, door_rects=door_rects):
-                            # Reached node - look around before buying
+                        # Move slowly when approaching (thief is careful)
+                        if self._follow_path(dt * 0.6, solid_rects, self.node_pos, proximity_threshold=TILE_SIZE * 0.5, door_rects=door_rects):
                             self.state = "looking_at_node"
                             self.look_around_timer = 0.0
-                            self.look_around_delay = random.uniform(0.5, 1.5)  # Look around time
+                            self.look_around_delay = random.uniform(0.8, 2.0)  # Thief looks around longer
                             self.path = None
                             self.path_index = 0
                 else:
-                    # Far from node, move normally
                     self.approaching_node = False
                     self.is_paused = False
                     if self._follow_path(dt, solid_rects, self.node_pos, proximity_threshold=TILE_SIZE * 0.5, door_rects=door_rects):
-                        # Reached node
                         self.state = "looking_at_node"
                         self.look_around_timer = 0.0
-                        self.look_around_delay = random.uniform(0.5, 1.5)
+                        self.look_around_delay = random.uniform(0.8, 2.0)
                         self.path = None
                         self.path_index = 0
         elif self.state == "looking_at_node":
-            # Human-like: look around at the node before buying
+            # Thief looks around more carefully before "buying"
             self.look_around_timer += dt
             if self.look_around_timer >= self.look_around_delay:
-                # Done looking, start buying
                 self.state = "buying"
-                self.buying_time = random.uniform(2.0, 4.0)  # Time spent buying
+                self.buying_time = random.uniform(1.5, 3.5)  # Thief is faster at buying
                 self.buying_elapsed = 0.0
                 self.look_around_timer = 0.0
         elif self.state == "buying":
-            # Stay at node for buying time (human-like: occasional small movements)
+            # Thief buys quickly (steals)
             self.buying_elapsed += dt
-            
-            # Occasionally make small "adjustment" movements (like shifting weight)
-            if random.random() < 0.01:  # 1% chance per frame
-                # Small random offset (very subtle)
-                small_offset = pygame.Vector2(
-                    random.uniform(-TILE_SIZE * 0.1, TILE_SIZE * 0.1),
-                    random.uniform(-TILE_SIZE * 0.1, TILE_SIZE * 0.1)
-                )
-                test_pos = self.position + small_offset
-                # Only move if it doesn't collide
-                would_collide = False
-                test_rect = pygame.Rect(
-                    int(test_pos.x - self.radius),
-                    int(test_pos.y - self.radius),
-                    self.radius * 2,
-                    self.radius * 2,
-                )
-                for tile_rect in solid_rects:
-                    if test_rect.colliderect(tile_rect):
-                        would_collide = True
-                        break
-                if not would_collide:
-                    self.position = test_pos
-            
             if self.buying_elapsed >= self.buying_time:
-                # Done buying, drop coin and leave
-                self.drop_cash = True
+                # Thief doesn't drop cash, just leaves
                 self.state = "leaving"
                 self.path = None
                 self.path_index = 0
@@ -227,22 +198,16 @@ class Customer:
                 self.path = None
                 self.path_index = 0
                 self._stuck_timer = 0.0
-                self._progress_timer = 0.0
-                self._last_target_distance = float('inf')
                 self._pick_new_browsing_target()
+        
         elif self.state == "browsing":
             self.browsing_elapsed += dt
             
-            # If we've browsed long enough, drop dodge coin and leave
+            # After browsing for a while, switch to stealing mode
             if self.browsing_elapsed >= self.browsing_time:
-                self.drop_cash = True
-                self.state = "leaving"
+                self.state = "searching"
                 self.path = None
                 self.path_index = 0
-                self._stuck_timer = 0.0
-                self._progress_timer = 0.0
-                self._last_target_distance = float('inf')
-                self._compute_path(self.leave_pos)
             else:
                 # Walk around the shelf - pick new positions to walk to
                 if self.browsing_target is None:
@@ -252,6 +217,40 @@ class Customer:
                     if self._follow_path(dt, solid_rects, self.browsing_target, proximity_threshold=TILE_SIZE * 0.4, door_rects=door_rects):
                         # Reached browsing target, pick a new one
                         self._pick_new_browsing_target()
+        
+        elif self.state == "searching":
+            # Find all dodge coins on the floor
+            if cash_items:
+                # Pick a random dodge coin to steal
+                self.target_cash = random.choice(cash_items)
+                self.target_cash_pos = pygame.Vector2(self.target_cash.pos)
+                self.state = "stealing"
+                self._compute_path(self.target_cash_pos)
+            else:
+                # No dodge coins available, leave immediately
+                self.state = "leaving"
+                self._compute_path(self.leave_pos)
+        
+        elif self.state == "stealing":
+            if self.target_cash_pos is None:
+                self.state = "leaving"
+                self._compute_path(self.leave_pos)
+            elif self.target_cash and self.target_cash not in cash_items:
+                # Dodge coin was already taken by someone else, leave
+                self.target_cash = None
+                self.target_cash_pos = None
+                self.state = "leaving"
+                self._compute_path(self.leave_pos)
+            else:
+                # Move towards the dodge coin
+                if self._follow_path(dt, solid_rects, self.target_cash_pos, proximity_threshold=TILE_SIZE * 0.4, door_rects=door_rects):
+                    # Reached dodge coin - steal it!
+                    self.stole_cash = True
+                    self.state = "leaving"
+                    self.path = None
+                    self.path_index = 0
+                    self._compute_path(self.leave_pos)
+        
         elif self.state == "leaving":
             # Use pathfinding to get to door first, then direct movement to exit
             # Check if we're at the door (within reasonable distance)
@@ -280,85 +279,8 @@ class Customer:
             self.path_index = 0
             self._stuck_timer = 0.0
             self._last_position = pygame.Vector2(self.position)
-            # If pathfinding failed, path will be None and we'll fall back to direct movement
         else:
             self.path = None
-
-    def _follow_path(self, dt: float, solid_rects: list[pygame.Rect], target: pygame.Vector2, proximity_threshold: float = TILE_SIZE * 0.3, door_rects: list[pygame.Rect] = None, allow_corner_cutting: bool = False) -> bool:
-        """
-        Follow the computed A* path. Returns True when target is reached.
-        Falls back to direct movement if pathfinding fails.
-        """
-        # Check if we're already close enough to target
-        distance_to_target = (self.position - target).length()
-        if distance_to_target < proximity_threshold:
-            self._stuck_timer = 0.0
-            return True
-        
-        # Check if we're stuck (not moving) OR making slow progress toward target
-        movement_distance = (self.position - self._last_position).length()
-        
-        # Initialize last_target_distance if needed
-        if self._last_target_distance == float('inf'):
-            self._last_target_distance = distance_to_target
-        
-        progress_toward_target = self._last_target_distance - distance_to_target
-        
-        # Detect if we're stuck (not moving) or sliding (moving but not getting closer)
-        if movement_distance < TILE_SIZE * 0.1:  # Hardly moved
-            self._stuck_timer += dt
-        elif progress_toward_target < TILE_SIZE * 0.05:  # Moving but not getting closer (sliding)
-            self._progress_timer += dt
-            # If sliding for too long, treat as stuck
-            if self._progress_timer > 0.3:
-                self._stuck_timer += dt
-        else:
-            self._stuck_timer = 0.0
-            self._progress_timer = 0.0
-            self._last_position = pygame.Vector2(self.position)
-            self._last_target_distance = distance_to_target
-        
-        # If stuck for more than 0.2 seconds, recompute path immediately
-        # This prevents pushing through corners
-        if self._stuck_timer > 0.2:
-            # Always recompute path when stuck - don't skip waypoints as that can cause corner cutting
-            self._compute_path(target)
-            self._stuck_timer = 0.0
-            self._progress_timer = 0.0
-            self._last_target_distance = distance_to_target
-            self._last_position = pygame.Vector2(self.position)
-        
-        # Try to follow path if available
-        if self.path and len(self.path) > 0 and self.path_index < len(self.path):
-            # Follow the path
-            next_waypoint = self.path[self.path_index]
-            distance_to_waypoint = (self.position - next_waypoint).length()
-            
-            # Use a larger threshold for waypoints to avoid getting stuck on corners
-            waypoint_threshold = max(proximity_threshold, TILE_SIZE * 0.65)
-            
-            if distance_to_waypoint < waypoint_threshold:
-                # Reached waypoint, move to next
-                self.path_index += 1
-                if self.path_index >= len(self.path):
-                    # Reached end of path, check if we're close to target
-                    distance_to_target = (self.position - target).length()
-                    return distance_to_target < proximity_threshold
-                next_waypoint = self.path[self.path_index]
-            
-            # Move towards current waypoint
-            self._move_towards(next_waypoint, dt, solid_rects, proximity_threshold=waypoint_threshold, door_rects=door_rects, allow_corner_cutting=allow_corner_cutting)
-            return False  # Still following path
-        else:
-            # No path available or path exhausted, fall back to direct movement
-            # Recompute path occasionally in case we got stuck
-            if self.path is None or self.path_index >= len(self.path):
-                # Only recompute if we haven't moved closer recently
-                if self._last_path_recompute_pos is None or (self.position - self._last_path_recompute_pos).length() > TILE_SIZE * 2:
-                    self._compute_path(target)
-                    self._last_path_recompute_pos = pygame.Vector2(self.position)
-            
-            return self._move_towards(target, dt, solid_rects, proximity_threshold=proximity_threshold, door_rects=door_rects, allow_corner_cutting=allow_corner_cutting)
 
     def _pick_new_browsing_target(self) -> None:
         """Pick a random valid floor tile position around the shelf to walk to while browsing.
@@ -419,6 +341,65 @@ class Customer:
                 self.shelf_pos.y + offset_y
             )
             self._compute_path(self.browsing_target)
+
+    def _follow_path(self, dt: float, solid_rects: list[pygame.Rect], target: pygame.Vector2, proximity_threshold: float = TILE_SIZE * 0.3, door_rects: list[pygame.Rect] = None, allow_corner_cutting: bool = False) -> bool:
+        """
+        Follow the computed A* path. Returns True when target is reached.
+        Falls back to direct movement if pathfinding fails.
+        """
+        # Check if we're already close enough to target
+        distance_to_target = (self.position - target).length()
+        if distance_to_target < proximity_threshold:
+            self._stuck_timer = 0.0
+            return True
+        
+        # Check if we're stuck (not moving)
+        movement_distance = (self.position - self._last_position).length()
+        if movement_distance < TILE_SIZE * 0.1:  # Hardly moved
+            self._stuck_timer += dt
+        else:
+            self._stuck_timer = 0.0
+            self._last_position = pygame.Vector2(self.position)
+        
+        # If stuck for more than 0.2 seconds, recompute path immediately
+        # This prevents pushing through corners
+        if self._stuck_timer > 0.2:
+            # Always recompute path when stuck - don't skip waypoints as that can cause corner cutting
+            self._compute_path(target)
+            self._stuck_timer = 0.0
+            self._last_position = pygame.Vector2(self.position)
+        
+        # Try to follow path if available
+        if self.path and len(self.path) > 0 and self.path_index < len(self.path):
+            # Follow the path
+            next_waypoint = self.path[self.path_index]
+            distance_to_waypoint = (self.position - next_waypoint).length()
+            
+            # Use a larger threshold for waypoints to avoid getting stuck on corners
+            waypoint_threshold = max(proximity_threshold, TILE_SIZE * 0.5)
+            
+            if distance_to_waypoint < waypoint_threshold:
+                # Reached waypoint, move to next
+                self.path_index += 1
+                if self.path_index >= len(self.path):
+                    # Reached end of path, check if we're close to target
+                    distance_to_target = (self.position - target).length()
+                    return distance_to_target < proximity_threshold
+                next_waypoint = self.path[self.path_index]
+            
+            # Move towards current waypoint
+            self._move_towards(next_waypoint, dt, solid_rects, proximity_threshold=waypoint_threshold, door_rects=door_rects, allow_corner_cutting=allow_corner_cutting)
+            return False  # Still following path
+        else:
+            # No path available or path exhausted, fall back to direct movement
+            # Recompute path occasionally in case we got stuck
+            if self.path is None or self.path_index >= len(self.path):
+                # Only recompute if we haven't moved closer recently
+                if self._last_path_recompute_pos is None or (self.position - self._last_path_recompute_pos).length() > TILE_SIZE * 2:
+                    self._compute_path(target)
+                    self._last_path_recompute_pos = pygame.Vector2(self.position)
+            
+            return self._move_towards(target, dt, solid_rects, proximity_threshold=proximity_threshold, door_rects=door_rects, allow_corner_cutting=allow_corner_cutting)
 
     def _move_towards(self, target: pygame.Vector2, dt: float, solid_rects: list[pygame.Rect], proximity_threshold: float = TILE_SIZE * 0.3, door_rects: list[pygame.Rect] = None, allow_corner_cutting: bool = False) -> bool:
         """

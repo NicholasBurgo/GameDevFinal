@@ -1,16 +1,16 @@
-"""Customer entity with AI behavior."""
+"""Litter customer entity that drops litter on the floor."""
 
 import math
 import random
 
 import pygame
 
-from config import COLOR_CUSTOMER, CUSTOMER_RADIUS, CUSTOMER_SPEED, FPS, TILE_SIZE
+from config import COLOR_CUSTOMER, CUSTOMER_RADIUS, CUSTOMER_SPEED, FPS, TILE_FLOOR, TILE_SIZE
 from map import find_path
 
 
-class Customer:
-    """Simple customer AI: enter door -> go to shelf -> browse around shelf -> drop dodge coin -> leave."""
+class LitterCustomer:
+    """Litter customer AI: enter door -> go to shelf -> drop litter while walking -> leave."""
 
     def __init__(
         self,
@@ -24,7 +24,7 @@ class Customer:
         # Spawn at the door position (door tiles are walkable for customers)
         self.position = pygame.Vector2(door_pos)
         self.radius = CUSTOMER_RADIUS
-        self.color = COLOR_CUSTOMER
+        self.color = COLOR_CUSTOMER  # Same color as regular customers
 
         self.door_pos = pygame.Vector2(door_pos)
         self.shelf_targets = shelf_targets or [self.door_pos]
@@ -60,18 +60,11 @@ class Customer:
                 self.browsing_positions = shelf_browsing_positions[shelf_key]
         # Fallback: if no browsing positions provided, use empty list (will use old method)
 
-        # Browsing around shelf
-        self.browsing_time = random.uniform(3.0, 8.0)  # Total time to browse
+        # Browsing around shelf - longer time to drop multiple litter items
+        self.browsing_time = random.uniform(10.0, 20.0)  # Longer browsing time for multiple drops
         self.browsing_elapsed = 0.0
         self.browsing_target: pygame.Vector2 | None = None
         self.shelf_target: pygame.Vector2 | None = None  # Target position to reach shelf area
-        
-        # Human-like behavior for nodes
-        self.look_around_timer: float = 0.0
-        self.look_around_delay: float = random.uniform(0.5, 2.0)  # Random pauses to look around
-        self.pause_timer: float = 0.0
-        self.is_paused: bool = False
-        self.approaching_node: bool = False  # Track if we're close to node
 
         # A* pathfinding
         self.path: list[pygame.Vector2] | None = None
@@ -79,14 +72,29 @@ class Customer:
         self._last_path_recompute_pos: pygame.Vector2 | None = None
         self._stuck_timer: float = 0.0
         self._last_position: pygame.Vector2 = pygame.Vector2(self.position)
-        self._last_target_distance: float = float('inf')
-        self._progress_timer: float = 0.0
 
         # Leaving target (outside the door to the right)
         self.leave_pos = pygame.Vector2(self.door_pos.x + TILE_SIZE * 2.0, self.door_pos.y)
 
+        # Human-like behavior for nodes
+        self.look_around_timer: float = 0.0
+        self.look_around_delay: float = random.uniform(0.5, 2.0)
+        self.pause_timer: float = 0.0
+        self.is_paused: bool = False
+        self.approaching_node: bool = False
+
         self.finished = False
-        self.drop_cash = False
+        self.drop_litter = False
+        self.litter_pos: pygame.Vector2 | None = None
+        
+        # Litter dropping: drop 5-10 items
+        self.litter_count_target = random.randint(5, 10)
+        self.litter_count_dropped = 0
+        
+        # Timer for dropping litter randomly while walking
+        self.litter_drop_timer = 0.0
+        self.litter_drop_delay = random.uniform(0.8, 2.0)  # Delay between litter drops
+        self._last_litter_drop_pos: pygame.Vector2 | None = None  # Track last drop position to avoid stacking
 
     @property
     def rect(self) -> pygame.Rect:
@@ -120,90 +128,76 @@ class Customer:
                     # Compute path using A*
                     self._compute_path(self.shelf_target)
         elif self.state == "to_node":
-            # Move towards the node with human-like behavior
+            # Move towards the node with human-like behavior (litter customer is careless)
             if self.node_pos is None:
                 self.state = "leaving"
                 self._compute_path(self.leave_pos)
             else:
-                # Check distance to node
                 distance_to_node = (self.position - self.node_pos).length()
                 
-                # If close to node, start approaching behavior (slow down, look around)
+                # Litter customer pauses less, moves more carelessly
                 if distance_to_node < TILE_SIZE * 2.0:
                     self.approaching_node = True
-                    # Occasionally pause to look around
                     self.look_around_timer += dt
                     if self.look_around_timer >= self.look_around_delay and not self.is_paused:
-                        # Pause for a moment to look around
                         self.is_paused = True
-                        self.pause_timer = random.uniform(0.3, 0.8)  # Short pause
+                        self.pause_timer = random.uniform(0.2, 0.5)  # Shorter pauses
                         self.look_around_timer = 0.0
-                        self.look_around_delay = random.uniform(0.5, 2.0)  # Next pause delay
+                        self.look_around_delay = random.uniform(0.3, 1.5)
                     
-                    # If paused, don't move
                     if self.is_paused:
                         self.pause_timer -= dt
                         if self.pause_timer <= 0:
                             self.is_paused = False
                     else:
-                        # Move slowly when approaching (more careful)
-                        if self._follow_path(dt * 0.7, solid_rects, self.node_pos, proximity_threshold=TILE_SIZE * 0.5, door_rects=door_rects):
-                            # Reached node - look around before buying
+                        # Move normally (less careful)
+                        if self._follow_path(dt * 0.85, solid_rects, self.node_pos, proximity_threshold=TILE_SIZE * 0.5, door_rects=door_rects):
                             self.state = "looking_at_node"
                             self.look_around_timer = 0.0
-                            self.look_around_delay = random.uniform(0.5, 1.5)  # Look around time
+                            self.look_around_delay = random.uniform(0.3, 1.0)  # Quick look
                             self.path = None
                             self.path_index = 0
                 else:
-                    # Far from node, move normally
                     self.approaching_node = False
                     self.is_paused = False
                     if self._follow_path(dt, solid_rects, self.node_pos, proximity_threshold=TILE_SIZE * 0.5, door_rects=door_rects):
-                        # Reached node
                         self.state = "looking_at_node"
                         self.look_around_timer = 0.0
-                        self.look_around_delay = random.uniform(0.5, 1.5)
+                        self.look_around_delay = random.uniform(0.3, 1.0)
                         self.path = None
                         self.path_index = 0
         elif self.state == "looking_at_node":
-            # Human-like: look around at the node before buying
+            # Litter customer looks around briefly
             self.look_around_timer += dt
             if self.look_around_timer >= self.look_around_delay:
-                # Done looking, start buying
                 self.state = "buying"
-                self.buying_time = random.uniform(2.0, 4.0)  # Time spent buying
+                self.buying_time = random.uniform(2.0, 4.0)
                 self.buying_elapsed = 0.0
                 self.look_around_timer = 0.0
         elif self.state == "buying":
-            # Stay at node for buying time (human-like: occasional small movements)
+            # Litter customer buys and might drop litter
             self.buying_elapsed += dt
+            self.litter_drop_timer += dt
             
-            # Occasionally make small "adjustment" movements (like shifting weight)
-            if random.random() < 0.01:  # 1% chance per frame
-                # Small random offset (very subtle)
-                small_offset = pygame.Vector2(
-                    random.uniform(-TILE_SIZE * 0.1, TILE_SIZE * 0.1),
-                    random.uniform(-TILE_SIZE * 0.1, TILE_SIZE * 0.1)
-                )
-                test_pos = self.position + small_offset
-                # Only move if it doesn't collide
-                would_collide = False
-                test_rect = pygame.Rect(
-                    int(test_pos.x - self.radius),
-                    int(test_pos.y - self.radius),
-                    self.radius * 2,
-                    self.radius * 2,
-                )
-                for tile_rect in solid_rects:
-                    if test_rect.colliderect(tile_rect):
-                        would_collide = True
-                        break
-                if not would_collide:
-                    self.position = test_pos
+            # Check if it's time to drop litter while at node
+            if self.litter_drop_timer >= self.litter_drop_delay:
+                if self._is_on_floor_tile():
+                    should_drop = True
+                    if self._last_litter_drop_pos:
+                        distance_from_last = (self.position - self._last_litter_drop_pos).length()
+                        if distance_from_last < TILE_SIZE * 0.8:
+                            should_drop = False
+                    
+                    if should_drop and self.litter_count_dropped < self.litter_count_target:
+                        self.drop_litter = True
+                        self.litter_pos = pygame.Vector2(self.position)
+                        self.litter_count_dropped += 1
+                        self.litter_drop_timer = 0.0
+                        self.litter_drop_delay = random.uniform(0.8, 2.0)
+                        self._last_litter_drop_pos = pygame.Vector2(self.position)
             
             if self.buying_elapsed >= self.buying_time:
-                # Done buying, drop coin and leave
-                self.drop_cash = True
+                # Done buying, leave
                 self.state = "leaving"
                 self.path = None
                 self.path_index = 0
@@ -219,7 +213,7 @@ class Customer:
                     self.shelf_target = self.shelf_pos
                 self._compute_path(self.shelf_target)
             
-            # Check if we've reached the target browsing position
+            # Check if we're close enough to the target browsing position
             if self._follow_path(dt, solid_rects, self.shelf_target, proximity_threshold=TILE_SIZE * 0.4, door_rects=door_rects):
                 self.state = "browsing"
                 self.browsing_elapsed = 0.0
@@ -227,31 +221,53 @@ class Customer:
                 self.path = None
                 self.path_index = 0
                 self._stuck_timer = 0.0
-                self._progress_timer = 0.0
-                self._last_target_distance = float('inf')
                 self._pick_new_browsing_target()
         elif self.state == "browsing":
             self.browsing_elapsed += dt
+            self.litter_drop_timer += dt
             
-            # If we've browsed long enough, drop dodge coin and leave
-            if self.browsing_elapsed >= self.browsing_time:
-                self.drop_cash = True
+            # Check if we've dropped all required litter items
+            if self.litter_count_dropped >= self.litter_count_target:
+                # Done dropping litter, leave
                 self.state = "leaving"
                 self.path = None
                 self.path_index = 0
-                self._stuck_timer = 0.0
-                self._progress_timer = 0.0
-                self._last_target_distance = float('inf')
                 self._compute_path(self.leave_pos)
             else:
-                # Walk around the shelf - pick new positions to walk to
-                if self.browsing_target is None:
-                    self._pick_new_browsing_target()
+                # Check if it's time to drop litter (while walking around)
+                if self.litter_drop_timer >= self.litter_drop_delay:
+                    # Check if we're on a floor tile and haven't dropped at this position recently
+                    if self._is_on_floor_tile():
+                        # Check if we're far enough from last drop position (avoid stacking)
+                        should_drop = True
+                        if self._last_litter_drop_pos:
+                            distance_from_last = (self.position - self._last_litter_drop_pos).length()
+                            if distance_from_last < TILE_SIZE * 0.8:  # Too close to last drop
+                                should_drop = False
+                        
+                        if should_drop:
+                            self.drop_litter = True
+                            self.litter_pos = pygame.Vector2(self.position)
+                            self.litter_count_dropped += 1
+                            self.litter_drop_timer = 0.0
+                            self.litter_drop_delay = random.uniform(0.8, 2.0)  # Reset delay
+                            self._last_litter_drop_pos = pygame.Vector2(self.position)
+                
+                # If we've browsed long enough, leave even if we haven't dropped all items
+                if self.browsing_elapsed >= self.browsing_time:
+                    self.state = "leaving"
+                    self.path = None
+                    self.path_index = 0
+                    self._compute_path(self.leave_pos)
                 else:
-                    # Move towards browsing target using pathfinding
-                    if self._follow_path(dt, solid_rects, self.browsing_target, proximity_threshold=TILE_SIZE * 0.4, door_rects=door_rects):
-                        # Reached browsing target, pick a new one
+                    # Walk around the shelf - pick new positions to walk to
+                    if self.browsing_target is None:
                         self._pick_new_browsing_target()
+                    else:
+                        # Move towards browsing target using pathfinding
+                        if self._follow_path(dt, solid_rects, self.browsing_target, proximity_threshold=TILE_SIZE * 0.4, door_rects=door_rects):
+                            # Reached browsing target, pick a new one
+                            self._pick_new_browsing_target()
         elif self.state == "leaving":
             # Use pathfinding to get to door first, then direct movement to exit
             # Check if we're at the door (within reasonable distance)
@@ -259,19 +275,25 @@ class Customer:
             
             if distance_to_door < TILE_SIZE * 1.5:
                 # At door, use direct movement to exit (outside map bounds)
-                # Allow corner cutting when leaving
-                if self._move_towards(self.leave_pos, dt, solid_rects, proximity_threshold=TILE_SIZE * 0.5, door_rects=door_rects, allow_corner_cutting=True):
+                if self._move_towards(self.leave_pos, dt, solid_rects, proximity_threshold=TILE_SIZE * 0.5, door_rects=door_rects):
                     self.finished = True
             else:
                 # Not at door yet, use pathfinding to get there
-                # Allow corner cutting when leaving
                 if self.path is None or self.path_index >= len(self.path):
                     self._compute_path(self.door_pos)
                 
-                if self._follow_path(dt, solid_rects, self.door_pos, proximity_threshold=TILE_SIZE * 0.4, door_rects=door_rects, allow_corner_cutting=True):
+                if self._follow_path(dt, solid_rects, self.door_pos, proximity_threshold=TILE_SIZE * 0.4, door_rects=door_rects):
                     # Reached door, path will be recomputed next frame to go to exit
                     self.path = None
                     self.path_index = 0
+
+    def _is_on_floor_tile(self) -> bool:
+        """Check if the customer is currently standing on a floor tile."""
+        if self.tile_map:
+            col = int(self.position.x // TILE_SIZE)
+            row = int(self.position.y // TILE_SIZE)
+            return self.tile_map.tile_at(col, row) == TILE_FLOOR
+        return False
 
     def _compute_path(self, target: pygame.Vector2) -> None:
         """Compute A* path to target."""
@@ -295,28 +317,13 @@ class Customer:
             self._stuck_timer = 0.0
             return True
         
-        # Check if we're stuck (not moving) OR making slow progress toward target
+        # Check if we're stuck (not moving)
         movement_distance = (self.position - self._last_position).length()
-        
-        # Initialize last_target_distance if needed
-        if self._last_target_distance == float('inf'):
-            self._last_target_distance = distance_to_target
-        
-        progress_toward_target = self._last_target_distance - distance_to_target
-        
-        # Detect if we're stuck (not moving) or sliding (moving but not getting closer)
         if movement_distance < TILE_SIZE * 0.1:  # Hardly moved
             self._stuck_timer += dt
-        elif progress_toward_target < TILE_SIZE * 0.05:  # Moving but not getting closer (sliding)
-            self._progress_timer += dt
-            # If sliding for too long, treat as stuck
-            if self._progress_timer > 0.3:
-                self._stuck_timer += dt
         else:
             self._stuck_timer = 0.0
-            self._progress_timer = 0.0
             self._last_position = pygame.Vector2(self.position)
-            self._last_target_distance = distance_to_target
         
         # If stuck for more than 0.2 seconds, recompute path immediately
         # This prevents pushing through corners
@@ -324,8 +331,6 @@ class Customer:
             # Always recompute path when stuck - don't skip waypoints as that can cause corner cutting
             self._compute_path(target)
             self._stuck_timer = 0.0
-            self._progress_timer = 0.0
-            self._last_target_distance = distance_to_target
             self._last_position = pygame.Vector2(self.position)
         
         # Try to follow path if available
@@ -335,7 +340,7 @@ class Customer:
             distance_to_waypoint = (self.position - next_waypoint).length()
             
             # Use a larger threshold for waypoints to avoid getting stuck on corners
-            waypoint_threshold = max(proximity_threshold, TILE_SIZE * 0.65)
+            waypoint_threshold = max(proximity_threshold, TILE_SIZE * 0.5)
             
             if distance_to_waypoint < waypoint_threshold:
                 # Reached waypoint, move to next

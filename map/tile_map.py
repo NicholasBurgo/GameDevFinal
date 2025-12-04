@@ -6,11 +6,13 @@ from config import (
     COLOR_COUNTER,
     COLOR_DOOR,
     COLOR_FLOOR,
+    COLOR_NODE,
     COLOR_SHELF,
     COLOR_WALL,
     TILE_COUNTER,
     TILE_DOOR,
     TILE_FLOOR,
+    TILE_NODE,
     TILE_SHELF,
     TILE_SIZE,
     TILE_WALL,
@@ -21,12 +23,12 @@ from config import (
 STORE_MAP = [
     "####################",
     "#..................#",
-    "#...........CCCCC..#",
-    "#.SSSS.............#",
+    "#...N.......CCCCC..#",
+    "#.SSSS........N....#",
     "#..................#",
-    "#..................D",
+    "#...N..............D",
     "#.SSSS....SSSS.....#",
-    "#..................#",
+    "#...........N......#",
     "#..................#",
     "####################",
 ]
@@ -57,6 +59,31 @@ class TileMap:
                     centers.append(pygame.Vector2(x, y))
         return centers
 
+    def find_floor_tiles_around_shelf_group(self, shelf_group_center: pygame.Vector2, search_radius: int = 2) -> list[pygame.Vector2]:
+        """
+        Find floor tiles around a shelf group center that customers can walk on.
+        Returns list of world-space centers of valid floor tiles.
+        """
+        valid_positions: list[pygame.Vector2] = []
+        
+        # Convert world position to tile coordinates
+        center_col = int(shelf_group_center.x // TILE_SIZE)
+        center_row = int(shelf_group_center.y // TILE_SIZE)
+        
+        # Search in a radius around the shelf center
+        for row_offset in range(-search_radius, search_radius + 1):
+            for col_offset in range(-search_radius, search_radius + 1):
+                row = center_row + row_offset
+                col = center_col + col_offset
+                
+                # Check if tile is a floor tile
+                if self.tile_at(col, row) == TILE_FLOOR:
+                    x = col * TILE_SIZE + TILE_SIZE // 2
+                    y = row * TILE_SIZE + TILE_SIZE // 2
+                    valid_positions.append(pygame.Vector2(x, y))
+        
+        return valid_positions
+
     def draw(self, surface: pygame.Surface) -> None:
         """Draw the map to the surface."""
         for row in range(self.rows):
@@ -75,6 +102,8 @@ class TileMap:
                     color = COLOR_DOOR
                 elif tile == TILE_COUNTER:
                     color = COLOR_COUNTER
+                elif tile == TILE_NODE:
+                    color = COLOR_NODE
                 else:
                     color = COLOR_FLOOR
 

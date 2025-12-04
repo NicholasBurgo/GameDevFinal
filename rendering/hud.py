@@ -19,3 +19,6 @@ class HUD:
             surface.blit(surf, (5, y))
             y += surf.get_height() + 2
 
+
+
+

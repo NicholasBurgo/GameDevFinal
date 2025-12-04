@@ -72,3 +72,6 @@ class Player:
     def draw(self, surface: pygame.Surface) -> None:
         pygame.draw.circle(surface, self.color, (int(self.x), int(self.y)), self.radius)
 
+
+
+
