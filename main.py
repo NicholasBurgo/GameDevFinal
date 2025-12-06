@@ -4,6 +4,8 @@ import sys
 
 import pygame
 
+import pygame
+
 from config import FPS, TILE_SIZE
 from game import GameState
 from map import TileMap
@@ -21,12 +23,20 @@ def main() -> None:
     except pygame.error:
         print("Warning: Could not initialize audio mixer")
     
-    # Create tile map
+    # Create tile map (initial - GameState will create both maps)
     tile_map = TileMap()
     
-    # Screen size derived from map dimensions so the whole store fits exactly.
-    screen_width = tile_map.cols * TILE_SIZE
-    screen_height = tile_map.rows * TILE_SIZE
+    # Initialize game systems first to get both maps
+    game_state = GameState(tile_map)
+    
+    # Screen size based on the larger room (usually store)
+    store_width = game_state.store_map.cols * TILE_SIZE
+    store_height = game_state.store_map.rows * TILE_SIZE
+    office_width = game_state.office_map.cols * TILE_SIZE
+    office_height = game_state.office_map.rows * TILE_SIZE
+    
+    screen_width = max(store_width, office_width)
+    screen_height = max(store_height, office_height)
     
     screen = pygame.display.set_mode((screen_width, screen_height))
     clock = pygame.time.Clock()
@@ -42,8 +52,7 @@ def main() -> None:
         print(f"Warning: Could not load sound file {sound_path}. Pygame mixer may not support .webm files.")
         print("Consider converting the file to .wav or .ogg format.")
 
-    # Initialize game systems
-    game_state = GameState(tile_map)
+    # Initialize renderer
     renderer = Renderer(screen)
     hud = HUD()
     
@@ -71,15 +80,20 @@ def main() -> None:
         game_state.update(dt)
 
         # Render based on game state
-        if game_state.game_state in ("playing", "waiting_for_customers", "collection_time"):
+        if game_state.game_state in ("playing", "waiting_for_customers", "collection_time", "tax_man_notification"):
             # Render normal game (allows player to move and collect during waiting/collection states)
             renderer.clear()
-            renderer.draw_map(tile_map)
-            renderer.draw_entities(
-                game_state.player,
-                game_state.customers,
-                game_state.cash_items,
-                game_state.litter_items,
+            # Draw active room with camera offset
+            active_map = game_state.store_map if game_state.current_room == "store" else game_state.office_map
+            room_world_y_offset = 0.0 if game_state.current_room == "store" else game_state.office_world_y_offset
+            renderer.draw_room_with_camera(
+                active_map=active_map,
+                camera_y_offset=game_state.camera_y_offset,
+                player=game_state.player,
+                customers=game_state.customers if game_state.current_room == "store" else [],
+                cash_items=game_state.cash_items if game_state.current_room == "store" else [],
+                litter_items=game_state.litter_items if game_state.current_room == "store" else [],
+                room_world_y_offset=room_world_y_offset,
             )
             
             # Draw pixelated time counter at top center
@@ -87,6 +101,10 @@ def main() -> None:
             
             # Draw pixelated coins counter at top right
             renderer.draw_coins_counter(game_state.collected_coins)
+            
+            # Draw tax man notification if in notification state
+            if game_state.game_state == "tax_man_notification":
+                renderer.draw_tax_man_notification(game_state.tax_man_tax_amount)
             
             # Update HUD lines with game info
             hud_lines = [
@@ -99,6 +117,8 @@ def main() -> None:
             elif game_state.game_state == "collection_time":
                 remaining_time = max(0, 5.0 - game_state.collection_timer)
                 hud_lines.append(f"Collection time: {remaining_time:.1f}s")
+            elif game_state.game_state == "tax_man_notification":
+                hud_lines.append("Press SPACE to open message")
             
             hud.draw(screen, hud_lines)
         elif game_state.game_state == "day_over_animation":
@@ -118,8 +138,12 @@ def main() -> None:
                 awaiting_response=game_state.tax_man_awaiting_response,
                 input_mode=game_state.tax_man_input_mode,
                 player_argument=game_state.tax_man_player_argument,
-                conversation=game_state.tax_man_conversation
+                conversation=game_state.tax_man_conversation,
+                boss_fight_triggered=game_state.tax_man_boss_fight_triggered
             )
+        elif game_state.game_state == "boss_fight":
+            # Render boss fight screen
+            renderer.draw_boss_fight_screen()
 
         pygame.display.flip()
 

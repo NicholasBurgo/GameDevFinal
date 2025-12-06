@@ -7,12 +7,14 @@ from config import (
     COLOR_DOOR,
     COLOR_FLOOR,
     COLOR_NODE,
+    COLOR_OFFICE_DOOR,
     COLOR_SHELF,
     COLOR_WALL,
     TILE_COUNTER,
     TILE_DOOR,
     TILE_FLOOR,
     TILE_NODE,
+    TILE_OFFICE_DOOR,
     TILE_SHELF,
     TILE_SIZE,
     TILE_WALL,
@@ -21,7 +23,7 @@ from config import (
 
 # Simple retro-style store: outer walls, some shelves forming aisles.
 STORE_MAP = [
-    "####################",
+    "###########O########",
     "#..................#",
     "#...N.......CCCCC..#",
     "#.SSSS........N....#",
@@ -29,8 +31,21 @@ STORE_MAP = [
     "#...N..............D",
     "#.SSSS....SSSS.....#",
     "#...........N......#",
+    "#....N......N......#",
+    "#.SSSS....SSSS.....#",
     "#..................#",
     "####################",
+]
+
+# Office room map - smaller room for the player
+OFFICE_MAP = [
+    "############",
+    "#..........#",
+    "#..........#",
+    "#..........#",  # Office door to return to store
+    "#..........#",
+    "#..........#",
+    "###O########",
 ]
 
 
@@ -100,6 +115,8 @@ class TileMap:
                     color = COLOR_SHELF
                 elif tile == TILE_DOOR:
                     color = COLOR_DOOR
+                elif tile == TILE_OFFICE_DOOR:
+                    color = COLOR_OFFICE_DOOR
                 elif tile == TILE_COUNTER:
                     color = COLOR_COUNTER
                 elif tile == TILE_NODE:

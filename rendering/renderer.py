@@ -172,6 +172,16 @@ class Renderer:
         except (pygame.error, FileNotFoundError):
             print(f"Warning: Could not load phone hand image: {phonehand_path}")
             self.phonehand_image = None
+        
+        # Load boss fight battle scene image
+        self.battle_scene_image: pygame.Surface | None = None
+        try:
+            battle_scene_path = "assets/imgs/BattleScene.png"
+            loaded_image = pygame.image.load(battle_scene_path)
+            self.battle_scene_image = loaded_image
+        except (pygame.error, FileNotFoundError):
+            print(f"Warning: Could not load battle scene image: {battle_scene_path}")
+            self.battle_scene_image = None
 
     def clear(self) -> None:
         """Clear the screen with background color."""
@@ -180,6 +190,153 @@ class Renderer:
     def draw_map(self, tile_map: TileMap) -> None:
         """Draw the tile map."""
         tile_map.draw(self.screen)
+    
+    def draw_room_with_camera(
+        self,
+        active_map: TileMap,
+        camera_y_offset: float,
+        player: "Player",
+        customers: list = None,
+        cash_items: list = None,
+        litter_items: list = None,
+        room_world_y_offset: float = 0.0,
+    ) -> None:
+        """
+        Draw only the active room with camera offset.
+        Camera moves to show the active room (office is stacked below store).
+        
+        Args:
+            active_map: The currently active map (store or office)
+            camera_y_offset: Camera Y offset (0 for store, positive for office)
+            player: The player entity
+            customers: Customers to draw
+            cash_items: Cash items to draw
+            litter_items: Litter items to draw
+        """
+        if customers is None:
+            customers = []
+        if cash_items is None:
+            cash_items = []
+        if litter_items is None:
+            litter_items = []
+        
+        from config import TILE_SIZE, COLOR_BG
+        
+        # Fill entire screen with background color first (important for smaller rooms)
+        self.screen.fill(COLOR_BG)
+        
+        # Draw map tiles with camera offset
+        # room_world_y_offset is 0 for store, office_world_y_offset for office
+        for row in range(active_map.rows):
+            for col in range(active_map.cols):
+                tile = active_map.map_data[row][col]
+                
+                x = col * TILE_SIZE
+                # Convert local tile position to world position, then apply camera offset
+                world_y = room_world_y_offset + (row * TILE_SIZE)
+                y = world_y - int(camera_y_offset)  # Apply camera offset to get screen position
+                
+                # Only draw if visible on screen
+                screen_height = self.screen.get_height()
+                if y + TILE_SIZE >= 0 and y < screen_height:
+                    rect = pygame.Rect(x, y, TILE_SIZE, TILE_SIZE)
+                    
+                    from config import (
+                        COLOR_COUNTER, COLOR_DOOR, COLOR_FLOOR, COLOR_NODE,
+                        COLOR_OFFICE_DOOR, COLOR_SHELF, COLOR_WALL, TILE_COUNTER,
+                        TILE_DOOR, TILE_FLOOR, TILE_NODE, TILE_OFFICE_DOOR,
+                        TILE_SHELF, TILE_WALL
+                    )
+                    
+                    if tile == TILE_WALL:
+                        color = COLOR_WALL
+                    elif tile == TILE_SHELF:
+                        color = COLOR_SHELF
+                    elif tile == TILE_DOOR:
+                        color = COLOR_DOOR
+                    elif tile == TILE_OFFICE_DOOR:
+                        color = COLOR_OFFICE_DOOR
+                    elif tile == TILE_COUNTER:
+                        color = COLOR_COUNTER
+                    elif tile == TILE_NODE:
+                        color = COLOR_FLOOR
+                    else:
+                        color = COLOR_FLOOR
+                    
+                    pygame.draw.rect(self.screen, color, rect)
+        
+        # Draw entities with camera offset
+        for coin in cash_items:
+            coin_screen_y = coin.pos.y - int(camera_y_offset)
+            screen_height = self.screen.get_height()
+            if -TILE_SIZE // 4 <= coin_screen_y < screen_height + TILE_SIZE // 4:
+                from config import COLOR_CASH
+                size = TILE_SIZE // 4
+                coin_rect = pygame.Rect(
+                    int(coin.pos.x - size / 2),
+                    int(coin_screen_y - size / 2),
+                    size,
+                    size,
+                )
+                pygame.draw.rect(self.screen, COLOR_CASH, coin_rect)
+        
+        for litter in litter_items:
+            litter_screen_y = litter.pos.y - int(camera_y_offset)
+            screen_height = self.screen.get_height()
+            if -TILE_SIZE // 4 <= litter_screen_y < screen_height + TILE_SIZE // 4:
+                from config import COLOR_LITTER
+                size = TILE_SIZE // 4
+                pygame.draw.circle(self.screen, COLOR_LITTER,
+                                 (int(litter.pos.x), int(litter_screen_y)), size)
+        
+        for customer in customers:
+            customer_screen_y = customer.position.y - int(camera_y_offset)
+            screen_height = self.screen.get_height()
+            from config import CUSTOMER_RADIUS
+            if -CUSTOMER_RADIUS <= customer_screen_y < screen_height + CUSTOMER_RADIUS:
+                from config import COLOR_CUSTOMER
+                pygame.draw.circle(self.screen, COLOR_CUSTOMER,
+                                 (int(customer.position.x), int(customer_screen_y)),
+                                 CUSTOMER_RADIUS)
+        
+        # Draw player with camera offset
+        player_screen_y = player.y - int(camera_y_offset)
+        screen_height = self.screen.get_height()
+        from config import PLAYER_RADIUS
+        if -PLAYER_RADIUS <= player_screen_y < screen_height + PLAYER_RADIUS:
+            from config import COLOR_PLAYER
+            pygame.draw.circle(self.screen, COLOR_PLAYER,
+                             (int(player.x), int(player_screen_y)), PLAYER_RADIUS)
+    
+    def draw_tax_man_notification(self, tax_amount: int) -> None:
+        """
+        Draw a pixelated "Text message" notification on the left side.
+        
+        Args:
+            tax_amount: Amount of tax to pay (not used in display, but kept for consistency)
+        """
+        from config import COLOR_TEXT
+        
+        # Draw pixelated "Text message" text on the left side
+        # Create a small font and render at small size for pixelation
+        # Use monospace font for better pixelated look
+        # Base size is 30px, will be scaled 3x to 90px total (matching other pixelated text)
+        small_font = pygame.font.SysFont("monospace", 30)
+        text = "Text message"
+        small_surface = small_font.render(text, True, COLOR_TEXT)
+        
+        # Scale up without smoothing for pixelated effect
+        # Scale factor of 3 makes text 3x bigger (30px -> 90px)
+        scale_factor = 3
+        pixelated_surface = pygame.transform.scale(
+            small_surface,
+            (small_surface.get_width() * scale_factor, small_surface.get_height() * scale_factor)
+        )
+        
+        # Position on left side, near top (matching vertical position of coins counter)
+        text_rect = pixelated_surface.get_rect()
+        text_rect.topleft = (20, 20)
+        self.screen.blit(pixelated_surface, text_rect)
 
     def draw_entities(
         self,
@@ -350,7 +507,8 @@ class Renderer:
         awaiting_response: bool = False,
         input_mode: bool = False,
         player_argument: str = "",
-        conversation: list[dict[str, str]] = None
+        conversation: list[dict[str, str]] = None,
+        boss_fight_triggered: bool = False
     ) -> None:
         """
         Draw tax man screen with menu options inside an iPhone frame.
@@ -384,6 +542,7 @@ class Renderer:
         large_font = pygame.font.SysFont(None, 36)
         medium_font = pygame.font.SysFont(None, 28)
         small_font = pygame.font.SysFont(None, 20)
+        input_font = pygame.font.SysFont(None, 24)  # Larger font for input box
         
         # Use dark text color for light iPhone background
         text_color = (30, 30, 30)
@@ -600,31 +759,35 @@ class Renderer:
                     self.screen.blit(thinking_surface, thinking_rect)
             current_y = thinking_y + 30
         
-        # Always draw input box at the bottom
-        input_box_height = 50
-        input_box_margin = 10
-        input_box_y = screen_y + screen_h - input_box_height - input_box_margin
-        input_box_width = screen_w - 40
-        input_box_x = screen_x + (screen_w - input_box_width) // 2
-        
-        # Draw input box background (white with border)
-        input_box_rect = pygame.Rect(input_box_x, input_box_y, input_box_width, input_box_height)
-        pygame.draw.rect(self.screen, (255, 255, 255), input_box_rect, border_radius=10)
-        pygame.draw.rect(self.screen, (200, 200, 200), input_box_rect, width=2, border_radius=10)
-        
-        # Draw player's input text with cursor
-        input_text = player_argument + "_"  # Cursor
-        input_lines = self._wrap_text(input_text, small_font, input_box_width - 20, text_color)
-        
-        for i, line in enumerate(input_lines):
-            line_surface = small_font.render(line, True, text_color)
-            line_rect = line_surface.get_rect()
-            line_rect.left = input_box_x + 15
-            line_rect.centery = input_box_y + input_box_height // 2 + i * 20 - (len(input_lines) - 1) * 10
-            self.screen.blit(line_surface, line_rect)
+        # Always draw input box at the bottom (only if boss fight not triggered)
+        if not boss_fight_triggered:
+            input_box_height = 50
+            input_box_margin = 10
+            input_box_y = screen_y + screen_h - input_box_height - input_box_margin
+            input_box_width = screen_w - 40
+            input_box_x = screen_x + (screen_w - input_box_width) // 2
+            
+            # Draw input box background (white with border)
+            input_box_rect = pygame.Rect(input_box_x, input_box_y, input_box_width, input_box_height)
+            pygame.draw.rect(self.screen, (255, 255, 255), input_box_rect, border_radius=10)
+            pygame.draw.rect(self.screen, (200, 200, 200), input_box_rect, width=2, border_radius=10)
+            
+            # Draw player's input text with cursor
+            input_text = player_argument + "_"  # Cursor
+            input_lines = self._wrap_text(input_text, input_font, input_box_width - 20, text_color)
+            
+            for i, line in enumerate(input_lines):
+                line_surface = input_font.render(line, True, text_color)
+                line_rect = line_surface.get_rect()
+                line_rect.left = input_box_x + 15
+                line_rect.centery = input_box_y + input_box_height // 2 + i * 24 - (len(input_lines) - 1) * 12
+                self.screen.blit(line_surface, line_rect)
         
         # Instructions at very bottom
-        instruction = "Type a message and press ENTER to send. Click Venmo to pay."
+        if boss_fight_triggered:
+            instruction = "Press SPACE to close"
+        else:
+            instruction = "Type a message and press ENTER to send. Click Venmo to pay. Press SPACE to close."
         instruction_surface = pygame.font.SysFont(None, 16).render(instruction, True, (150, 150, 150))
         instruction_rect = instruction_surface.get_rect(center=(screen_x + screen_w // 2, screen_y + screen_h - 2))
         self.screen.blit(instruction_surface, instruction_rect)
@@ -721,4 +884,35 @@ class Renderer:
         text_rect = pixelated_surface.get_rect()
         text_rect.topright = (self.screen.get_width() - 30, 10)
         self.screen.blit(pixelated_surface, text_rect)
+    
+    def draw_boss_fight_screen(self) -> None:
+        """
+        Draw boss fight screen using BattleScene.png image.
+        """
+        screen_width = self.screen.get_width()
+        screen_height = self.screen.get_height()
+        
+        if self.battle_scene_image is not None:
+            # Scale image to fit screen while maintaining aspect ratio
+            img_width, img_height = self.battle_scene_image.get_size()
+            scale_x = screen_width / img_width
+            scale_y = screen_height / img_height
+            scale = max(scale_x, scale_y)  # Scale to fill screen
+            
+            scaled_width = int(img_width * scale)
+            scaled_height = int(img_height * scale)
+            scaled_image = pygame.transform.scale(self.battle_scene_image, (scaled_width, scaled_height))
+            
+            # Center the image on screen
+            x = (screen_width - scaled_width) // 2
+            y = (screen_height - scaled_height) // 2
+            self.screen.blit(scaled_image, (x, y))
+        else:
+            # Fallback: black screen with text if image not loaded
+            self.screen.fill((0, 0, 0))
+            large_font = pygame.font.SysFont(None, 72)
+            text = "BOSS FIGHT INITIATED"
+            text_surface = large_font.render(text, True, (255, 255, 255))
+            text_rect = text_surface.get_rect(center=(screen_width // 2, screen_height // 2))
+            self.screen.blit(text_surface, text_rect)
 
