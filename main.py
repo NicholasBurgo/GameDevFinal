@@ -142,8 +142,15 @@ def main() -> None:
                 boss_fight_triggered=game_state.tax_man_boss_fight_triggered
             )
         elif game_state.game_state == "boss_fight":
-            # Render boss fight screen
-            renderer.draw_boss_fight_screen()
+            # Render boss fight screen with Pokemon-style flash effect
+            renderer.draw_boss_fight_screen(
+                show_flash=game_state.boss_fight_show_flash,
+                flash_timer=game_state.boss_fight_flash_timer,
+                flash_duration=game_state.boss_fight_flash_duration,
+                boss_health=game_state.boss_health,
+                player_health=game_state.player_health,
+                menu_selection=game_state.boss_fight_menu_selection
+            )
 
         pygame.display.flip()
 

@@ -176,7 +176,7 @@ class Renderer:
         # Load boss fight battle scene image
         self.battle_scene_image: pygame.Surface | None = None
         try:
-            battle_scene_path = "assets/imgs/BattleScene.png"
+            battle_scene_path = "assets/imgs/Battlescene.png"
             loaded_image = pygame.image.load(battle_scene_path)
             self.battle_scene_image = loaded_image
         except (pygame.error, FileNotFoundError):
@@ -885,19 +885,46 @@ class Renderer:
         text_rect.topright = (self.screen.get_width() - 30, 10)
         self.screen.blit(pixelated_surface, text_rect)
     
-    def draw_boss_fight_screen(self) -> None:
+    def draw_boss_fight_screen(self, show_flash: bool = False, flash_timer: float = 0.0, flash_duration: float = 0.3, 
+                               boss_health: float = 100.0, player_health: float = 100.0, menu_selection: int = 0) -> None:
         """
-        Draw boss fight screen using BattleScene.png image.
+        Draw boss fight screen using BattleScene.png image with Pokemon-style flash effect.
+        
+        Args:
+            show_flash: Whether to show flash effect (before battle scene)
+            flash_timer: Current flash timer value
+            flash_duration: Total flash duration in seconds
+            boss_health: Tax boss health (0.0 to 1.0)
+            player_health: Player health (0.0 to 1.0)
         """
         screen_width = self.screen.get_width()
         screen_height = self.screen.get_height()
         
+        # ===== HEALTH BAR POSITIONS (EASY TO ADJUST) =====
+        # Boss health bar (top-left area)
+        BOSS_BAR_X = 600
+        BOSS_BAR_Y = 300
+        BOSS_BAR_WIDTH = 400
+        BOSS_BAR_HEIGHT = 30
+        
+        # Player health bar (bottom-right area)
+        PLAYER_BAR_X = 1720  
+        PLAYER_BAR_Y = 817  
+        PLAYER_BAR_WIDTH = 400
+        PLAYER_BAR_HEIGHT = 30
+        # =================================================
+        
+        # Fill with blue-ish background
+        self.screen.fill((100, 150, 200))  # Light blue background
+        
+        # Draw battle scene first (will be visible after flash)
+        battle_scene_drawn = False
         if self.battle_scene_image is not None:
-            # Scale image to fit screen while maintaining aspect ratio
+            # Scale image to fit screen while maintaining aspect ratio (show whole image)
             img_width, img_height = self.battle_scene_image.get_size()
             scale_x = screen_width / img_width
             scale_y = screen_height / img_height
-            scale = max(scale_x, scale_y)  # Scale to fill screen
+            scale = min(scale_x, scale_y)  # Scale to fit entire image on screen
             
             scaled_width = int(img_width * scale)
             scaled_height = int(img_height * scale)
@@ -907,12 +934,156 @@ class Renderer:
             x = (screen_width - scaled_width) // 2
             y = (screen_height - scaled_height) // 2
             self.screen.blit(scaled_image, (x, y))
-        else:
-            # Fallback: black screen with text if image not loaded
+            battle_scene_drawn = True
+        
+        # Pokemon-style flash effect: bright white flash that fades out
+        if show_flash and flash_timer < flash_duration:
+            # Calculate flash intensity (starts at 255, fades to 0)
+            progress = flash_timer / flash_duration
+            # Use a curve for smoother fade (ease out)
+            fade_progress = 1.0 - (progress * progress)  # Quadratic ease out
+            flash_alpha = int(255 * fade_progress)
+            
+            # Create a white surface with alpha for the flash
+            flash_surface = pygame.Surface((screen_width, screen_height))
+            flash_surface.fill((255, 255, 255))
+            flash_surface.set_alpha(flash_alpha)
+            self.screen.blit(flash_surface, (0, 0))
+        
+        # Fallback if image not loaded
+        if not battle_scene_drawn:
             self.screen.fill((0, 0, 0))
             large_font = pygame.font.SysFont(None, 72)
             text = "BOSS FIGHT INITIATED"
             text_surface = large_font.render(text, True, (255, 255, 255))
             text_rect = text_surface.get_rect(center=(screen_width // 2, screen_height // 2))
             self.screen.blit(text_surface, text_rect)
+        
+        # Draw health bars (only if not flashing, or after flash)
+        if not show_flash or flash_timer >= flash_duration:
+            # Boss health bar (top-left)
+            boss_bar_color = self._get_health_bar_color(boss_health)
+            self._draw_health_bar(
+                BOSS_BAR_X, BOSS_BAR_Y, BOSS_BAR_WIDTH, BOSS_BAR_HEIGHT,
+                boss_health / 100.0, bar_color=boss_bar_color, bg_color=(100, 30, 30)
+            )
+            
+            # Player health bar (bottom-right) - shrinks from right side
+            player_bar_color = self._get_health_bar_color(player_health)
+            self._draw_health_bar(
+                PLAYER_BAR_X, PLAYER_BAR_Y, PLAYER_BAR_WIDTH, PLAYER_BAR_HEIGHT,
+                player_health / 100.0, bar_color=player_bar_color, bg_color=(100, 30, 30),
+                align_right=True  # Player bar shrinks from right
+            )
+            
+            # Draw menu buttons (Fight, Bag, Pay)
+            # ===== MENU BUTTON POSITIONS (EASY TO ADJUST) =====
+            MENU_BUTTONS_X = 1600 # 400 pixels from right edge (moved left)
+            MENU_BUTTONS_Y = 1100 # 400 pixels from bottom (moved up)
+            BUTTON_SPACING = 80  # Space between buttons (closer together)
+            # =================================================
+            self._draw_boss_fight_menu(MENU_BUTTONS_X, MENU_BUTTONS_Y, BUTTON_SPACING, menu_selection)
+    
+    def _get_health_bar_color(self, health: float) -> tuple:
+        """
+        Get health bar color based on health value.
+        Green at 100%, Yellow at 50%, Red at 25%, with smooth transitions.
+        
+        Args:
+            health: Health value (0-100)
+            
+        Returns:
+            RGB color tuple
+        """
+        health = max(0.0, min(100.0, health))
+        
+        if health >= 50.0:
+            # Interpolate between green (100%) and yellow (50%)
+            # health 100 = 1.0, health 50 = 0.0
+            t = (health - 50.0) / 50.0  # 0.0 to 1.0
+            # Green: (50, 200, 50), Yellow: (255, 255, 50)
+            r = int(50 + (255 - 50) * (1.0 - t))
+            g = int(200 + (255 - 200) * (1.0 - t))
+            b = int(50 + (50 - 50) * (1.0 - t))
+            return (r, g, b)
+        else:
+            # Interpolate between yellow (50%) and red (25%)
+            # health 50 = 1.0, health 25 = 0.0, health < 25 = red
+            if health >= 25.0:
+                t = (health - 25.0) / 25.0  # 0.0 to 1.0
+                # Yellow: (255, 255, 50), Red: (220, 50, 50)
+                r = int(220 + (255 - 220) * t)
+                g = int(50 + (255 - 50) * t)
+                b = int(50 + (50 - 50) * t)
+                return (r, g, b)
+            else:
+                # Below 25% - solid red
+                return (220, 50, 50)
+    
+    def _draw_health_bar(self, x: int, y: int, width: int, height: int, 
+                         health: float, bar_color: tuple, bg_color: tuple, align_right: bool = False) -> None:
+        """
+        Draw a health bar without text.
+        
+        Args:
+            x: X position (left)
+            y: Y position (top)
+            width: Bar width
+            height: Bar height
+            health: Health value (0.0 to 1.0)
+            bar_color: Color of the filled health bar (RGB tuple)
+            bg_color: Color of the background/empty part (RGB tuple)
+            align_right: If True, bar shrinks from right (filled portion on right). If False, shrinks from left.
+        """
+        # Clamp health to valid range
+        health = max(0.0, min(1.0, health))
+        
+        # Draw background (empty bar)
+        bg_rect = pygame.Rect(x, y, width, height)
+        pygame.draw.rect(self.screen, bg_color, bg_rect)
+        
+        # Draw border
+        pygame.draw.rect(self.screen, (0, 0, 0), bg_rect, width=2)
+        
+        # Draw filled health portion
+        if health > 0:
+            filled_width = int(width * health)
+            if align_right:
+                # Bar shrinks from right - filled portion starts from right side
+                health_x = x + (width - filled_width)
+            else:
+                # Bar shrinks from left - filled portion starts from left side
+                health_x = x
+            health_rect = pygame.Rect(health_x, y, filled_width, height)
+            pygame.draw.rect(self.screen, bar_color, health_rect)
+    
+    def _draw_boss_fight_menu(self, x: int, y: int, spacing: int, selection: int) -> None:
+        """
+        Draw the boss fight menu buttons (Fight, Bag, Pay).
+        
+        Args:
+            x: X position of button group (left side)
+            y: Y position of first button (top)
+            spacing: Vertical spacing between buttons
+            selection: Currently selected button index (0 = Fight, 1 = Bag, 2 = Pay)
+        """
+        buttons = ["Fight", "Bag", "Pay"]
+        bold_font = pygame.font.SysFont(None, 108)  # 3x bigger (36 * 3 = 108)
+        bold_font.set_bold(True)
+        text_color = (255, 255, 255)  # White text
+        selected_color = (255, 255, 100)  # Yellow for selected
+        
+        for i, button_text in enumerate(buttons):
+            button_y = y + (i * spacing)
+            is_selected = (i == selection)
+            
+            # Draw selection indicator ">" (3x bigger spacing)
+            if is_selected:
+                indicator = bold_font.render(">", True, selected_color)
+                self.screen.blit(indicator, (x - 75, button_y))  # 3x spacing (25 * 3 = 75)
+            
+            # Draw button text
+            color = selected_color if is_selected else text_color
+            text_surface = bold_font.render(button_text, True, color)
+            self.screen.blit(text_surface, (x, button_y))
 

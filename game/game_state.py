@@ -130,6 +130,18 @@ class GameState:
         self.tax_man_boss_fight_triggered = False  # Flag to track if boss fight was triggered (keep phone open)
         self.tax_man_has_paid = False  # Track if player has paid the tax
         
+        # Boss fight flash effect (Pokemon-style)
+        self.boss_fight_flash_timer = 0.0
+        self.boss_fight_flash_duration = 0.3  # Flash duration in seconds
+        self.boss_fight_show_flash = False
+        
+        # Boss fight health bars (0 to 100)
+        self.boss_health = 100  # Tax boss health (0-100)
+        self.player_health = 100  # Player health (0-100)
+        
+        # Boss fight menu buttons
+        self.boss_fight_menu_selection = 0  # 0 = Fight, 1 = Bag, 2 = Pay
+        
         # Initialize AI dialogue system
         self.ai_dialogue = AIDialogue()
 
@@ -175,6 +187,12 @@ class GameState:
                             customer.state = "leaving"
                             customer.path = None
                             customer.path_index = 0
+        
+        # Update boss fight flash timer
+        if self.game_state == "boss_fight" and self.boss_fight_show_flash:
+            self.boss_fight_flash_timer += dt
+            if self.boss_fight_flash_timer >= self.boss_fight_flash_duration:
+                self.boss_fight_show_flash = False
         
         # Check persuasion after AI response is received (in main thread)
         if self.game_state == "tax_man" and not self.tax_man_awaiting_response:
@@ -332,10 +350,25 @@ class GameState:
             if event.key == pygame.K_o:
                 if self.game_state == "playing":
                     self.game_state = "boss_fight"
+                    self.boss_fight_show_flash = True
+                    self.boss_fight_flash_timer = 0.0
+                    self.boss_fight_menu_selection = 0  # Reset to first option
                     return False
                 elif self.game_state == "boss_fight":
                     # Exit boss fight and return to playing
                     self.game_state = "playing"
+                    self.boss_fight_show_flash = False
+                    self.boss_fight_flash_timer = 0.0
+                    return False
+            elif self.game_state == "boss_fight":
+                # Handle menu navigation in boss fight
+                if event.key == pygame.K_w or event.key == pygame.K_UP:
+                    # Move selection up
+                    self.boss_fight_menu_selection = max(0, self.boss_fight_menu_selection - 1)
+                    return False
+                elif event.key == pygame.K_s or event.key == pygame.K_DOWN:
+                    # Move selection down
+                    self.boss_fight_menu_selection = min(2, self.boss_fight_menu_selection + 1)
                     return False
             # Handle "I" key to end the day early
             if event.key == pygame.K_i:
@@ -498,6 +531,8 @@ class GameState:
         # Check if boss fight should happen this day
         if self.tax_man_boss_fight_next_day:
             self.game_state = "boss_fight"
+            self.boss_fight_show_flash = True
+            self.boss_fight_flash_timer = 0.0
             self.tax_man_boss_fight_next_day = False  # Reset flag
         else:
             # Reset game state to playing
