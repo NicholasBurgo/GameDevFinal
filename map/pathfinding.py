@@ -4,7 +4,7 @@ import heapq
 
 import pygame
 
-from config import CUSTOMER_SOLID_TILES, TILE_DOOR, TILE_FLOOR, TILE_NODE, TILE_OFFICE_DOOR, TILE_SIZE
+from config import CUSTOMER_SOLID_TILES, TILE_ACTIVATION, TILE_DOOR, TILE_FLOOR, TILE_NODE, TILE_OFFICE_DOOR, TILE_SIZE
 
 
 class Node:
@@ -42,8 +42,9 @@ def is_walkable(tile_map, col: int, row: int) -> bool:
     """Check if a tile is walkable for customers."""
     tile = tile_map.tile_at(col, row)
     # Nodes are walkable (customers can stand on them to buy)
+    # Activation tiles are walkable like floor
     # Regular doors are walkable for customers, but office doors are not
-    return tile == TILE_FLOOR or tile == TILE_NODE or tile == TILE_DOOR or (tile not in CUSTOMER_SOLID_TILES and tile != TILE_OFFICE_DOOR)
+    return tile == TILE_FLOOR or tile == TILE_NODE or tile == TILE_ACTIVATION or tile == TILE_DOOR or (tile not in CUSTOMER_SOLID_TILES and tile != TILE_OFFICE_DOOR)
 
 
 def get_neighbors(tile_map, col: int, row: int) -> list[tuple[int, int]]:

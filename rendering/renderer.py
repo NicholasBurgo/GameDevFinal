@@ -1,6 +1,7 @@
 """Main renderer for game entities and map."""
 
 import math
+import random
 from typing import Union
 
 import cv2
@@ -182,6 +183,32 @@ class Renderer:
         except (pygame.error, FileNotFoundError):
             print(f"Warning: Could not load battle scene image: {battle_scene_path}")
             self.battle_scene_image = None
+        
+        # Load wall texture
+        self.wall_texture: pygame.Surface | None = None
+        try:
+            wall_texture_path = "assets/imgs/Wall1.png"
+            loaded_image = pygame.image.load(wall_texture_path)
+            self.wall_texture = loaded_image
+        except (pygame.error, FileNotFoundError):
+            print(f"Warning: Could not load wall texture: {wall_texture_path}")
+            self.wall_texture = None
+        
+        # Generate shelf texture
+        self.shelf_texture = self._generate_shelf_texture()
+        
+        # Generate blue stone wall texture
+        self.wall_stone_texture = self._generate_stone_wall_texture()
+        
+        # Generate door textures
+        self.door_texture = self._generate_door_texture()
+        self.office_door_texture = self._generate_office_door_texture()
+        
+        # Generate counter texture
+        self.counter_texture = self._generate_counter_texture()
+        
+        # Falling cash for main menu background
+        self.falling_cash: list[dict] = []  # List of {pos: Vector2, speed: float} dicts
 
     def clear(self) -> None:
         """Clear the screen with background color."""
@@ -189,7 +216,8 @@ class Renderer:
 
     def draw_map(self, tile_map: TileMap) -> None:
         """Draw the tile map."""
-        tile_map.draw(self.screen)
+        tile_map.draw(self.screen, shelf_texture=self.shelf_texture, wall_stone_texture=self.wall_stone_texture,
+                     counter_texture=self.counter_texture)
     
     def draw_room_with_camera(
         self,
@@ -242,28 +270,52 @@ class Renderer:
                     rect = pygame.Rect(x, y, TILE_SIZE, TILE_SIZE)
                     
                     from config import (
-                        COLOR_COUNTER, COLOR_DOOR, COLOR_FLOOR, COLOR_NODE,
-                        COLOR_OFFICE_DOOR, COLOR_SHELF, COLOR_WALL, TILE_COUNTER,
-                        TILE_DOOR, TILE_FLOOR, TILE_NODE, TILE_OFFICE_DOOR,
-                        TILE_SHELF, TILE_WALL
+                        COLOR_COMPUTER, COLOR_COUNTER, COLOR_DOOR, COLOR_FLOOR, COLOR_NODE,
+                        COLOR_OFFICE_DOOR, COLOR_SHELF, COLOR_WALL, TILE_ACTIVATION,
+                        TILE_COMPUTER, TILE_COUNTER, TILE_DOOR, TILE_FLOOR, TILE_NODE,
+                        TILE_OFFICE_DOOR, TILE_SHELF, TILE_WALL
                     )
                     
                     if tile == TILE_WALL:
-                        color = COLOR_WALL
+                        # Use blue stone texture if available, otherwise fall back to color
+                        if self.wall_stone_texture is not None:
+                            self.screen.blit(self.wall_stone_texture, rect)
+                        else:
+                            color = COLOR_WALL
+                            pygame.draw.rect(self.screen, color, rect)
                     elif tile == TILE_SHELF:
-                        color = COLOR_SHELF
+                        # Use shelf texture if available, otherwise fall back to color
+                        if self.shelf_texture is not None:
+                            self.screen.blit(self.shelf_texture, rect)
+                        else:
+                            color = COLOR_SHELF
+                            pygame.draw.rect(self.screen, color, rect)
                     elif tile == TILE_DOOR:
                         color = COLOR_DOOR
+                        pygame.draw.rect(self.screen, color, rect)
                     elif tile == TILE_OFFICE_DOOR:
                         color = COLOR_OFFICE_DOOR
+                        pygame.draw.rect(self.screen, color, rect)
                     elif tile == TILE_COUNTER:
-                        color = COLOR_COUNTER
+                        # Use counter texture if available, otherwise fall back to color
+                        if self.counter_texture is not None:
+                            self.screen.blit(self.counter_texture, rect)
+                        else:
+                            color = COLOR_COUNTER
+                            pygame.draw.rect(self.screen, color, rect)
                     elif tile == TILE_NODE:
                         color = COLOR_FLOOR
+                        pygame.draw.rect(self.screen, color, rect)
+                    elif tile == TILE_COMPUTER:
+                        color = COLOR_COMPUTER
+                        pygame.draw.rect(self.screen, color, rect)
+                    elif tile == TILE_ACTIVATION:
+                        # Activation tile is same color as floor (invisible)
+                        color = COLOR_FLOOR
+                        pygame.draw.rect(self.screen, color, rect)
                     else:
                         color = COLOR_FLOOR
-                    
-                    pygame.draw.rect(self.screen, color, rect)
+                        pygame.draw.rect(self.screen, color, rect)
         
         # Draw entities with camera offset
         for coin in cash_items:
@@ -294,10 +346,10 @@ class Renderer:
             screen_height = self.screen.get_height()
             from config import CUSTOMER_RADIUS
             if -CUSTOMER_RADIUS <= customer_screen_y < screen_height + CUSTOMER_RADIUS:
-                from config import COLOR_CUSTOMER
-                pygame.draw.circle(self.screen, COLOR_CUSTOMER,
-                                 (int(customer.position.x), int(customer_screen_y)),
-                                 CUSTOMER_RADIUS)
+                customer.draw(self.screen)
+                # Draw health bar if customer has been hit
+                if hasattr(customer, 'show_health_bar') and customer.show_health_bar:
+                    self.draw_customer_health_bar(customer, pygame.Vector2(customer.position.x, customer_screen_y))
         
         # Draw player with camera offset
         player_screen_y = player.y - int(camera_y_offset)
@@ -307,6 +359,30 @@ class Renderer:
             from config import COLOR_PLAYER
             pygame.draw.circle(self.screen, COLOR_PLAYER,
                              (int(player.x), int(player_screen_y)), PLAYER_RADIUS)
+    
+    def draw_boss_approaching_circle(
+        self,
+        circle_position: pygame.Vector2,
+        circle_radius: float,
+        camera_y_offset: float = 0.0,
+    ) -> None:
+        """
+        Draw the orange circle that approaches the player before boss fight.
+        
+        Args:
+            circle_position: World position of the circle
+            circle_radius: Radius of the circle
+            camera_y_offset: Camera Y offset for screen positioning
+        """
+        # Convert world position to screen position
+        screen_x = int(circle_position.x)
+        screen_y = int(circle_position.y - camera_y_offset)
+        
+        # Orange color for the circle
+        orange_color = (255, 140, 0)  # Same as COLOR_CUSTOMER
+        
+        # Draw the circle
+        pygame.draw.circle(self.screen, orange_color, (screen_x, screen_y), int(circle_radius))
     
     def draw_tax_man_notification(self, tax_amount: int) -> None:
         """
@@ -355,9 +431,60 @@ class Renderer:
         # Draw customers
         for customer in customers:
             customer.draw(self.screen)
+            # Draw health bar if customer has been hit
+            if hasattr(customer, 'show_health_bar') and customer.show_health_bar:
+                self.draw_customer_health_bar(customer, customer.position)
 
         # Draw player last so it appears on top
         player.draw(self.screen)
+    
+    def draw_customer_health_bar(self, customer, position: pygame.Vector2) -> None:
+        """
+        Draw health bar above customer.
+        
+        Args:
+            customer: Customer entity with health attributes
+            position: Screen position to draw health bar at
+        """
+        if not hasattr(customer, 'health') or not hasattr(customer, 'max_health'):
+            return
+        
+        health_ratio = customer.health / customer.max_health if customer.max_health > 0 else 0.0
+        
+        # Health bar dimensions
+        bar_width = 40
+        bar_height = 6
+        bar_offset_y = customer.radius + 8  # Position above customer
+        
+        # Bar position
+        bar_x = int(position.x - bar_width // 2)
+        bar_y = int(position.y - bar_offset_y)
+        
+        # Draw background (black/dark)
+        bg_rect = pygame.Rect(bar_x, bar_y, bar_width, bar_height)
+        pygame.draw.rect(self.screen, (0, 0, 0), bg_rect)
+        
+        # Draw health bar (green to red based on health)
+        if health_ratio > 0:
+            health_width = int(bar_width * health_ratio)
+            health_rect = pygame.Rect(bar_x, bar_y, health_width, bar_height)
+            
+            # Color transitions from green (healthy) to red (low health)
+            if health_ratio > 0.5:
+                # Green to yellow
+                r = int(255 * (1 - (health_ratio - 0.5) * 2))
+                g = 255
+                b = 0
+            else:
+                # Yellow to red
+                r = 255
+                g = int(255 * health_ratio * 2)
+                b = 0
+            
+            pygame.draw.rect(self.screen, (r, g, b), health_rect)
+        
+        # Draw border
+        pygame.draw.rect(self.screen, (255, 255, 255), bg_rect, 1)
 
     def load_day_over_video(self, video_path: str) -> bool:
         """
@@ -785,9 +912,9 @@ class Renderer:
         
         # Instructions at very bottom
         if boss_fight_triggered:
-            instruction = "Press SPACE to close"
+            instruction = "Press E to close"
         else:
-            instruction = "Type a message and press ENTER to send. Click Venmo to pay. Press SPACE to close."
+            instruction = "Type a message and press ENTER to send. Click Venmo to pay. Press E to close."
         instruction_surface = pygame.font.SysFont(None, 16).render(instruction, True, (150, 150, 150))
         instruction_rect = instruction_surface.get_rect(center=(screen_x + screen_w // 2, screen_y + screen_h - 2))
         self.screen.blit(instruction_surface, instruction_rect)
@@ -1057,6 +1184,210 @@ class Renderer:
             health_rect = pygame.Rect(health_x, y, filled_width, height)
             pygame.draw.rect(self.screen, bar_color, health_rect)
     
+    def _generate_shelf_texture(self) -> pygame.Surface:
+        """
+        Generate a shelf texture that looks like a wooden store shelf with products.
+        
+        Returns:
+            A pygame Surface with the shelf texture
+        """
+        from config import TILE_SIZE, COLOR_SHELF
+        
+        # Create surface for shelf texture
+        texture = pygame.Surface((TILE_SIZE, TILE_SIZE))
+        
+        # Base shelf color (brown/wooden)
+        base_color = COLOR_SHELF  # (140, 120, 80)
+        texture.fill(base_color)
+        
+        # Draw shelf structure - horizontal shelves
+        shelf_color = (100, 80, 50)  # Darker brown for shelf edges
+        shelf_thickness = max(2, TILE_SIZE // 20)
+        
+        # Top shelf edge
+        pygame.draw.rect(texture, shelf_color, (0, 0, TILE_SIZE, shelf_thickness))
+        # Bottom shelf edge
+        pygame.draw.rect(texture, shelf_color, (0, TILE_SIZE - shelf_thickness, TILE_SIZE, shelf_thickness))
+        
+        # Draw vertical supports on sides
+        support_width = max(2, TILE_SIZE // 15)
+        pygame.draw.rect(texture, shelf_color, (0, 0, support_width, TILE_SIZE))
+        pygame.draw.rect(texture, shelf_color, (TILE_SIZE - support_width, 0, support_width, TILE_SIZE))
+        
+        # Draw middle shelf (if tile is tall enough)
+        if TILE_SIZE > 60:
+            mid_y = TILE_SIZE // 2
+            pygame.draw.rect(texture, shelf_color, (0, mid_y - shelf_thickness // 2, TILE_SIZE, shelf_thickness))
+        
+        # Draw some product boxes on the shelf
+        # Top shelf products
+        if TILE_SIZE > 40:
+            # Small boxes
+            box_size = max(8, TILE_SIZE // 8)
+            box_spacing = box_size + 2
+            
+            # Top row of boxes
+            for i in range(2):
+                box_x = support_width + 5 + i * box_spacing
+                box_y = shelf_thickness + 3
+                if box_x + box_size < TILE_SIZE - support_width:
+                    # Box color (various product colors)
+                    box_colors = [
+                        (200, 50, 50),    # Red
+                        (50, 150, 200),   # Blue
+                        (200, 200, 50),   # Yellow
+                        (150, 200, 50),   # Green
+                    ]
+                    box_color = box_colors[i % len(box_colors)]
+                    pygame.draw.rect(texture, box_color, (box_x, box_y, box_size, box_size))
+                    # Box highlight
+                    pygame.draw.rect(texture, (min(255, box_color[0] + 30), 
+                                             min(255, box_color[1] + 30), 
+                                             min(255, box_color[2] + 30)), 
+                                   (box_x, box_y, box_size, box_size // 3))
+            
+            # Bottom row of boxes (if there's a middle shelf)
+            if TILE_SIZE > 60:
+                for i in range(2):
+                    box_x = support_width + 5 + i * box_spacing
+                    box_y = TILE_SIZE // 2 + shelf_thickness // 2 + 3
+                    if box_x + box_size < TILE_SIZE - support_width:
+                        box_colors = [
+                            (200, 50, 50),
+                            (50, 150, 200),
+                            (200, 200, 50),
+                            (150, 200, 50),
+                        ]
+                        box_color = box_colors[(i + 2) % len(box_colors)]
+                        pygame.draw.rect(texture, box_color, (box_x, box_y, box_size, box_size))
+                        pygame.draw.rect(texture, (min(255, box_color[0] + 30), 
+                                                 min(255, box_color[1] + 30), 
+                                                 min(255, box_color[2] + 30)), 
+                                       (box_x, box_y, box_size, box_size // 3))
+        
+        return texture
+    
+    def _generate_stone_wall_texture(self) -> pygame.Surface:
+        """
+        Generate a solid blue wall with no texture.
+        
+        Returns:
+            A pygame Surface with the solid blue wall color
+        """
+        from config import TILE_SIZE, COLOR_WALL
+        
+        # Create surface for wall texture
+        texture = pygame.Surface((TILE_SIZE, TILE_SIZE))
+        
+        # Just fill with solid blue color - no texture
+        texture.fill(COLOR_WALL)
+        
+        return texture
+    
+    def _generate_door_texture(self) -> pygame.Surface:
+        """
+        Generate a wooden door texture.
+        
+        Returns:
+            A pygame Surface with the door texture
+        """
+        from config import TILE_SIZE, COLOR_DOOR
+        
+        texture = pygame.Surface((TILE_SIZE, TILE_SIZE))
+        base_color = COLOR_DOOR  # (120, 80, 40) brown
+        texture.fill(base_color)
+        
+        # Draw door panels/boards
+        darker_wood = (max(0, base_color[0] - 15), max(0, base_color[1] - 10), max(0, base_color[2] - 5))
+        lighter_wood = (min(255, base_color[0] + 10), min(255, base_color[1] + 8), min(255, base_color[2] + 5))
+        
+        # Vertical door boards
+        board_width = max(4, TILE_SIZE // 6)
+        for i in range(0, TILE_SIZE, board_width + 2):
+            board_color = lighter_wood if (i // (board_width + 2)) % 2 == 0 else darker_wood
+            pygame.draw.rect(texture, board_color, (i, 0, board_width, TILE_SIZE))
+        
+        # Door handle/knob
+        handle_size = max(3, TILE_SIZE // 15)
+        handle_x = TILE_SIZE - handle_size - max(2, TILE_SIZE // 10)
+        handle_y = TILE_SIZE // 2
+        pygame.draw.circle(texture, (60, 60, 60), (handle_x, handle_y), handle_size)
+        
+        # Wood grain lines
+        grain_color = (max(0, base_color[0] - 8), max(0, base_color[1] - 5), max(0, base_color[2] - 3))
+        for i in range(0, TILE_SIZE, 4):
+            if i % 8 == 0:
+                pygame.draw.line(texture, grain_color, (0, i), (TILE_SIZE, i), 1)
+        
+        return texture
+    
+    def _generate_office_door_texture(self) -> pygame.Surface:
+        """
+        Generate a darker wooden office door texture.
+        
+        Returns:
+            A pygame Surface with the office door texture
+        """
+        from config import TILE_SIZE, COLOR_OFFICE_DOOR
+        
+        texture = pygame.Surface((TILE_SIZE, TILE_SIZE))
+        base_color = COLOR_OFFICE_DOOR  # (80, 50, 25) darker brown
+        texture.fill(base_color)
+        
+        # Draw door panels/boards
+        darker_wood = (max(0, base_color[0] - 12), max(0, base_color[1] - 8), max(0, base_color[2] - 4))
+        lighter_wood = (min(255, base_color[0] + 8), min(255, base_color[1] + 6), min(255, base_color[2] + 4))
+        
+        # Vertical door boards
+        board_width = max(4, TILE_SIZE // 6)
+        for i in range(0, TILE_SIZE, board_width + 2):
+            board_color = lighter_wood if (i // (board_width + 2)) % 2 == 0 else darker_wood
+            pygame.draw.rect(texture, board_color, (i, 0, board_width, TILE_SIZE))
+        
+        # Door handle/knob
+        handle_size = max(3, TILE_SIZE // 15)
+        handle_x = TILE_SIZE - handle_size - max(2, TILE_SIZE // 10)
+        handle_y = TILE_SIZE // 2
+        pygame.draw.circle(texture, (40, 40, 40), (handle_x, handle_y), handle_size)
+        
+        # Wood grain lines
+        grain_color = (max(0, base_color[0] - 6), max(0, base_color[1] - 4), max(0, base_color[2] - 2))
+        for i in range(0, TILE_SIZE, 4):
+            if i % 8 == 0:
+                pygame.draw.line(texture, grain_color, (0, i), (TILE_SIZE, i), 1)
+        
+        return texture
+    
+    def _generate_counter_texture(self) -> pygame.Surface:
+        """
+        Generate a glass display counter texture.
+        
+        Returns:
+            A pygame Surface with the glass counter texture
+        """
+        from config import TILE_SIZE, COLOR_COUNTER
+        
+        texture = pygame.Surface((TILE_SIZE, TILE_SIZE), pygame.SRCALPHA)
+        
+        # Glass base color - light blue/cyan with transparency
+        glass_base = (180, 220, 255, 200)  # Light blue with alpha
+        glass_darker = (150, 190, 240, 220)  # Slightly darker for edges
+        
+        # Fill with glass base color
+        texture.fill(glass_base)
+        
+        # Draw glass frame/edges (darker)
+        frame_thickness = max(2, TILE_SIZE // 15)
+        # Top edge
+        pygame.draw.rect(texture, glass_darker, (0, 0, TILE_SIZE, frame_thickness))
+        # Bottom edge
+        pygame.draw.rect(texture, glass_darker, (0, TILE_SIZE - frame_thickness, TILE_SIZE, frame_thickness))
+        # Left and right edges
+        pygame.draw.rect(texture, glass_darker, (0, 0, frame_thickness, TILE_SIZE))
+        pygame.draw.rect(texture, glass_darker, (TILE_SIZE - frame_thickness, 0, frame_thickness, TILE_SIZE))
+        
+        return texture
+    
     def _draw_boss_fight_menu(self, x: int, y: int, spacing: int, selection: int) -> None:
         """
         Draw the boss fight menu buttons (Fight, Bag, Pay).
@@ -1086,4 +1417,171 @@ class Renderer:
             color = selected_color if is_selected else text_color
             text_surface = bold_font.render(button_text, True, color)
             self.screen.blit(text_surface, (x, button_y))
+    
+    def _initialize_falling_cash(self) -> None:
+        """Initialize falling cash items for main menu background."""
+        import random
+        screen_width = self.screen.get_width()
+        screen_height = self.screen.get_height()
+        
+        # Create 30-40 falling cash items (2x more)
+        num_cash = random.randint(30, 40)
+        self.falling_cash = []
+        
+        for _ in range(num_cash):
+            x = random.randint(0, screen_width)
+            y = random.randint(-screen_height, 0)  # Start above screen
+            speed = random.uniform(50.0, 150.0)  # Pixels per second
+            angle = random.uniform(0, 360)  # Initial rotation angle in degrees
+            rotation_speed = random.uniform(-180.0, 180.0)  # Rotation speed in degrees per second
+            size_scale = random.uniform(0.7, 1.3)  # Size variation (70% to 130%)
+            self.falling_cash.append({
+                "pos": pygame.Vector2(x, y),
+                "speed": speed,
+                "angle": angle,
+                "rotation_speed": rotation_speed,
+                "size_scale": size_scale
+            })
+    
+    def _update_falling_cash(self, dt: float) -> None:
+        """Update falling cash positions and rotations."""
+        import random
+        screen_width = self.screen.get_width()
+        screen_height = self.screen.get_height()
+        
+        for cash in self.falling_cash:
+            # Move cash down
+            cash["pos"].y += cash["speed"] * dt
+            
+            # Rotate coin
+            cash["angle"] += cash["rotation_speed"] * dt
+            cash["angle"] %= 360  # Keep angle in 0-360 range
+            
+            # Respawn at top if fallen off screen
+            if cash["pos"].y > screen_height + 50:
+                cash["pos"].x = random.randint(0, screen_width)
+                cash["pos"].y = random.randint(-200, -50)
+                cash["speed"] = random.uniform(50.0, 150.0)
+                cash["angle"] = random.uniform(0, 360)
+                cash["rotation_speed"] = random.uniform(-180.0, 180.0)
+                cash["size_scale"] = random.uniform(0.7, 1.3)
+    
+    def draw_main_menu(self, dt: float = 0.016) -> None:
+        """
+        Draw the main menu with pixelated title and play button (no borders).
+        
+        Args:
+            dt: Delta time in seconds for animating falling cash
+        """
+        screen_width = self.screen.get_width()
+        screen_height = self.screen.get_height()
+        
+        # Initialize falling cash if empty (in case screen wasn't ready during __init__)
+        if not self.falling_cash:
+            self._initialize_falling_cash()
+        
+        # Update falling cash
+        self._update_falling_cash(dt)
+        
+        # Fill with background color
+        self.screen.fill(COLOR_BG)
+        
+        # Draw falling cash in background (as 3D coins)
+        from config import COLOR_CASH, TILE_SIZE
+        base_radius = TILE_SIZE // 4  # Base radius for coin (2x bigger)
+        
+        for cash in self.falling_cash:
+            # Calculate coin size based on scale
+            coin_radius = int(base_radius * cash["size_scale"])
+            
+            # Only draw if on screen
+            if -coin_radius <= cash["pos"].y <= screen_height + coin_radius:
+                # Calculate perspective effect based on angle (0-90 degrees = face-on, 90-180 = edge-on)
+                # Use sin to create 3D effect: when angle is 0 or 180, coin is face-on (full size)
+                # When angle is 90 or 270, coin is edge-on (smaller)
+                angle_rad = math.radians(cash["angle"])
+                perspective_scale = abs(math.cos(angle_rad))  # 1.0 when face-on, 0.0 when edge-on
+                perspective_scale = max(0.3, perspective_scale)  # Minimum 30% size for visibility
+                
+                # Calculate ellipse dimensions for 3D effect
+                # When face-on: width = height = full radius
+                # When edge-on: width = small, height = full radius
+                ellipse_width = int(coin_radius * 2 * perspective_scale)
+                ellipse_height = int(coin_radius * 2)
+                
+                # Create a surface for the coin to rotate it
+                coin_surface_size = int(coin_radius * 2 * 1.5)  # Extra space for rotation
+                coin_surface = pygame.Surface((coin_surface_size, coin_surface_size), pygame.SRCALPHA)
+                
+                # Draw coin base (circle/ellipse) with 3D shading
+                coin_center = (coin_surface_size // 2, coin_surface_size // 2)
+                
+                # Main coin color (brighter on top for 3D effect)
+                main_color = COLOR_CASH
+                # Darker shade for bottom/edge
+                dark_color = (
+                    max(0, COLOR_CASH[0] - 40),
+                    max(0, COLOR_CASH[1] - 40),
+                    max(0, COLOR_CASH[2] - 40)
+                )
+                
+                # Draw coin as ellipse (rotated)
+                # Draw darker bottom half for 3D effect
+                if perspective_scale > 0.5:  # Only show 3D effect when not edge-on
+                    pygame.draw.ellipse(coin_surface, dark_color, 
+                                      (coin_surface_size // 2 - ellipse_width // 2,
+                                       coin_surface_size // 2 - ellipse_height // 2 + ellipse_height // 3,
+                                       ellipse_width, ellipse_height // 2))
+                
+                # Draw main coin
+                pygame.draw.ellipse(coin_surface, main_color,
+                                  (coin_surface_size // 2 - ellipse_width // 2,
+                                   coin_surface_size // 2 - ellipse_height // 2,
+                                   ellipse_width, ellipse_height))
+                
+                # Rotate the coin surface
+                rotated_coin = pygame.transform.rotate(coin_surface, cash["angle"])
+                rotated_rect = rotated_coin.get_rect(center=(int(cash["pos"].x), int(cash["pos"].y)))
+                
+                # Draw rotated coin
+                self.screen.blit(rotated_coin, rotated_rect)
+        
+        # Draw pixelated title
+        title_text = "Tax Evasion Simulator"
+        
+        # Create a small font and render at small size for pixelation
+        # Use monospace font for better pixelated look
+        # Base size is 40px, will be scaled 4x to 160px total
+        small_font = pygame.font.SysFont("monospace", 40)
+        small_surface = small_font.render(title_text, True, COLOR_TEXT)
+        
+        # Scale up without smoothing for pixelated effect
+        # Scale factor of 4 makes text 4x bigger (40px -> 160px)
+        scale_factor = 4
+        pixelated_title = pygame.transform.scale(
+            small_surface,
+            (small_surface.get_width() * scale_factor, small_surface.get_height() * scale_factor)
+        )
+        
+        # Center title higher up on screen
+        title_rect = pixelated_title.get_rect(center=(screen_width // 2, screen_height // 5))
+        self.screen.blit(pixelated_title, title_rect)
+        
+        # Draw play button (no borders, just text)
+        play_text = "Play"
+        
+        # Create a smaller font for the button (base 36px, scaled 3x to 108px)
+        button_font = pygame.font.SysFont("monospace", 36)
+        button_small_surface = button_font.render(play_text, True, COLOR_TEXT)
+        
+        # Scale up for pixelated effect
+        button_scale_factor = 3
+        pixelated_button = pygame.transform.scale(
+            button_small_surface,
+            (button_small_surface.get_width() * button_scale_factor, button_small_surface.get_height() * button_scale_factor)
+        )
+        
+        # Center play button below title
+        button_rect = pixelated_button.get_rect(center=(screen_width // 2, screen_height // 2 + 100))
+        self.screen.blit(pixelated_button, button_rect)
 

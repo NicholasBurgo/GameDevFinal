@@ -1,13 +1,14 @@
 """Main game state management."""
 
+import math
 import threading
 from typing import Union
 
 import pygame
 
-from config import COLOR_PLAYER, DAY_DURATION, PLAYER_RADIUS, TILE_OFFICE_DOOR, TILE_SIZE
+from config import COLOR_PLAYER, CUSTOMER_SPEED, DAY_DURATION, FPS, PLAYER_RADIUS, TILE_OFFICE_DOOR, TILE_SIZE
 from entities import Cash, Customer, Litter, LitterCustomer, Player, ThiefCustomer
-from map import TileMap, get_customer_solid_tiles_around, get_solid_tiles_around
+from map import TileMap, find_path, get_customer_solid_tiles_around, get_solid_tiles_around
 from map.tile_map import OFFICE_MAP, STORE_MAP
 from .ai_dialogue import AIDialogue
 from .spawner import CustomerSpawner
@@ -92,8 +93,8 @@ class GameState:
         self.day_timer = 0.0
         self.collected_coins = 0
 
-        # Game state: "playing", "waiting_for_customers", "collection_time", "day_over_animation", "day_over", "tax_man_notification", "tax_man", "boss_fight"
-        self.game_state = "playing"
+        # Game state: "main_menu", "playing", "waiting_for_customers", "collection_time", "day_over_animation", "day_over", "tax_man_notification", "tax_man", "boss_approaching", "boss_fight"
+        self.game_state = "main_menu"
         
         # Day over sequence timers
         self.collection_timer = 0.0
@@ -142,8 +143,21 @@ class GameState:
         # Boss fight menu buttons
         self.boss_fight_menu_selection = 0  # 0 = Fight, 1 = Bag, 2 = Pay
         
+        # Boss approaching orange circle
+        self.boss_circle_position: pygame.Vector2 | None = None  # Position of orange circle
+        self.boss_circle_radius = 30.0  # Starting radius of the circle
+        self.boss_circle_speed = CUSTOMER_SPEED  # Speed at which circle approaches player (same as customers)
+        self.boss_circle_reached = False  # Whether circle has reached player
+        self.boss_circle_path: list[pygame.Vector2] | None = None  # A* path to player
+        self.boss_circle_path_index = 0  # Current waypoint index in path
+        
         # Initialize AI dialogue system
         self.ai_dialogue = AIDialogue()
+        
+        # Combat and panic mode system
+        self.panic_mode = False
+        self.spawn_ban_timer = 0.0
+        self.SPAWN_BAN_DURATION = (2.0 / 7.0) * DAY_DURATION  # 2 hours in 7-hour day
 
     def update(self, dt: float) -> None:
         """Update game state."""
@@ -188,6 +202,59 @@ class GameState:
                             customer.path = None
                             customer.path_index = 0
         
+        # Update boss approaching circle
+        if self.game_state == "boss_approaching" and self.boss_circle_position is not None:
+            player_pos = pygame.Vector2(self.player.x, self.player.y)
+            distance_to_player = (self.boss_circle_position - player_pos).length()
+            
+            # Check if close enough to player to trigger boss fight
+            if distance_to_player < TILE_SIZE * 0.5:  # Close enough to trigger
+                if not self.boss_circle_reached:
+                    self.boss_circle_reached = True
+                    # Transition to boss fight with flash
+                    self.game_state = "boss_fight"
+                    self.boss_fight_show_flash = True
+                    self.boss_fight_flash_timer = 0.0
+            else:
+                # Follow A* path to player
+                # Recompute path if we don't have one or if player moved significantly
+                if self.boss_circle_path is None or self.boss_circle_path_index >= len(self.boss_circle_path):
+                    # Compute new path to current player position
+                    self.boss_circle_path = find_path(self.store_map, self.boss_circle_position, player_pos)
+                    self.boss_circle_path_index = 0
+                
+                # Follow the path
+                if self.boss_circle_path and len(self.boss_circle_path) > 0 and self.boss_circle_path_index < len(self.boss_circle_path):
+                    # Get current waypoint
+                    next_waypoint = self.boss_circle_path[self.boss_circle_path_index]
+                    distance_to_waypoint = (self.boss_circle_position - next_waypoint).length()
+                    
+                    # Check if we've reached the waypoint
+                    waypoint_threshold = TILE_SIZE * 0.5
+                    if distance_to_waypoint < waypoint_threshold:
+                        # Reached waypoint, move to next
+                        self.boss_circle_path_index += 1
+                        if self.boss_circle_path_index < len(self.boss_circle_path):
+                            next_waypoint = self.boss_circle_path[self.boss_circle_path_index]
+                    
+                    # Move towards current waypoint (use same timing as customers)
+                    direction = next_waypoint - self.boss_circle_position
+                    if direction.length() > 0:
+                        direction.normalize_ip()
+                        # Use same movement calculation as customers: speed * dt * FPS
+                        step = self.boss_circle_speed * dt * FPS
+                        movement = direction * step
+                        self.boss_circle_position += movement
+                else:
+                    # No path available, fall back to direct movement (use same timing as customers)
+                    direction = player_pos - self.boss_circle_position
+                    if direction.length() > 0:
+                        direction.normalize_ip()
+                        # Use same movement calculation as customers: speed * dt * FPS
+                        step = self.boss_circle_speed * dt * FPS
+                        movement = direction * step
+                        self.boss_circle_position += movement
+        
         # Update boss fight flash timer
         if self.game_state == "boss_fight" and self.boss_fight_show_flash:
             self.boss_fight_flash_timer += dt
@@ -209,7 +276,7 @@ class GameState:
                     self._check_persuasion()
         
         # Only update game logic if we're in a state that allows gameplay
-        if self.game_state not in ("playing", "waiting_for_customers", "collection_time", "tax_man_notification"):
+        if self.game_state not in ("playing", "waiting_for_customers", "collection_time", "tax_man_notification", "boss_approaching"):
             # Video playback is handled in renderer, no need to update animation progress here
             return
 
@@ -251,11 +318,19 @@ class GameState:
             if coin in self.cash_items:
                 self.cash_items.remove(coin)
 
+        # Update spawn ban timer and panic mode
+        if self.spawn_ban_timer > 0.0:
+            self.spawn_ban_timer -= dt
+            if self.spawn_ban_timer <= 0.0:
+                self.spawn_ban_timer = 0.0
+                self.panic_mode = False
+        
         # Only update store entities when in store room
         if self.current_room == "store":
-            # Spawn customers (only during playing state)
+            # Spawn customers (only during playing state, and not during spawn ban)
             if self.game_state == "playing":
-                new_customer = self.spawner.update(dt, self.customers)
+                spawn_ban_active = self.spawn_ban_timer > 0.0
+                new_customer = self.spawner.update(dt, self.customers, spawn_ban_active=spawn_ban_active)
                 if new_customer:
                     self.customers.append(new_customer)
 
@@ -266,9 +341,12 @@ class GameState:
             # Door rects are passed separately but not used for collision
             
             # Handle different customer types
+            # Use player speed if in panic mode
+            use_player_speed = self.panic_mode
+            
             if isinstance(customer, ThiefCustomer):
                 # Thief customer needs access to dodge coins to find targets
-                customer.update(dt, customer_obstacle_rects, self.cash_items, customer_door_rects)
+                customer.update(dt, customer_obstacle_rects, self.cash_items, customer_door_rects, use_player_speed=use_player_speed)
                 if customer.stole_cash and customer.target_cash:
                     # Remove the stolen dodge coin
                     if customer.target_cash in self.cash_items:
@@ -277,7 +355,7 @@ class GameState:
                     customer.target_cash = None
             elif isinstance(customer, LitterCustomer):
                 # Litter customer drops litter
-                customer.update(dt, customer_obstacle_rects, customer_door_rects)
+                customer.update(dt, customer_obstacle_rects, customer_door_rects, use_player_speed=use_player_speed)
                 if customer.drop_litter and customer.litter_pos:
                     # Place litter where customer dropped it
                     self.litter_items.append(Litter(customer.litter_pos))
@@ -285,7 +363,7 @@ class GameState:
                     customer.litter_pos = None
             else:
                 # Regular customer drops dodge coins
-                customer.update(dt, customer_obstacle_rects, customer_door_rects)
+                customer.update(dt, customer_obstacle_rects, customer_door_rects, use_player_speed=use_player_speed)
                 if customer.drop_cash:
                     # Place dodge coin at the shelf position where customer is standing
                     self.cash_items.append(Cash(customer.position))
@@ -336,7 +414,7 @@ class GameState:
                         # Clicked on Venmo bubble - pay tax
                         self.collected_coins = max(0, self.collected_coins - self.tax_man_tax_amount)
                         self.tax_man_has_paid = True
-                        # Don't close automatically - user can close with SPACE
+                        # Don't close automatically - user can close with E
                         return False  # Event handled but don't stop propagation
                     else:
                         # Can't pay - trigger boss fight next day
@@ -346,13 +424,37 @@ class GameState:
         elif event.type == pygame.KEYDOWN:
             if event.key == pygame.K_ESCAPE:
                 return True
+            # Handle main menu input
+            if self.game_state == "main_menu":
+                # Any key or Enter starts the game
+                if event.key == pygame.K_RETURN or event.key == pygame.K_SPACE or event.key == pygame.K_p:
+                    self.game_state = "playing"
+                    return False
+            # Handle SPACE key for attacking customers
+            if event.key == pygame.K_SPACE:
+                if self.game_state == "playing" and self.current_room == "store":
+                    self._handle_player_attack()
+                    return False
             # Handle "O" key to activate boss fight anytime
             if event.key == pygame.K_o:
                 if self.game_state == "playing":
-                    self.game_state = "boss_fight"
-                    self.boss_fight_show_flash = True
-                    self.boss_fight_flash_timer = 0.0
-                    self.boss_fight_menu_selection = 0  # Reset to first option
+                    # Start with orange circle approaching instead of immediate boss fight
+                    self.game_state = "boss_approaching"
+                    # Initialize circle position at door (like a customer)
+                    door_centers = self.store_map.find_tile_centers("D")  # TILE_DOOR
+                    door_pos = door_centers[0] if door_centers else pygame.Vector2(
+                        self.store_map.cols * TILE_SIZE // 2,
+                        self.store_map.rows * TILE_SIZE // 2
+                    )
+                    self.boss_circle_position = pygame.Vector2(door_pos)
+                    self.boss_circle_radius = 30.0
+                    self.boss_circle_reached = False
+                    self.boss_circle_path = None
+                    self.boss_circle_path_index = 0
+                    # Compute path to player
+                    player_pos = pygame.Vector2(self.player.x, self.player.y)
+                    self.boss_circle_path = find_path(self.store_map, self.boss_circle_position, player_pos)
+                    self.boss_circle_path_index = 0
                     return False
                 elif self.game_state == "boss_fight":
                     # Exit boss fight and return to playing
@@ -406,8 +508,8 @@ class GameState:
                 # Legacy state - start a new day (tax man is only accessible via notification)
                 self._start_new_day()
             elif self.game_state == "tax_man_notification":
-                # Space key opens tax man menu from notification
-                if event.key == pygame.K_SPACE:
+                # E key opens tax man menu from notification
+                if event.key == pygame.K_e:
                     self.game_state = "tax_man"
                     self.tax_man_menu_selection = 0
                     self.tax_man_ai_response = None
@@ -418,8 +520,8 @@ class GameState:
                     # Reset notification timer when opening menu
                     self.tax_man_notification_timer = 0.0
             elif self.game_state == "tax_man":
-                # Space key closes tax man screen (can close anytime)
-                if event.key == pygame.K_SPACE:
+                # E key closes tax man screen (can close anytime)
+                if event.key == pygame.K_e:
                     # Check if player has paid - if not, trigger boss fight next day
                     if not self.tax_man_has_paid and not self.tax_man_boss_fight_triggered:
                         # Player closed without paying - trigger boss fight next day
@@ -517,10 +619,88 @@ class GameState:
                             self.tax_man_player_argument += event.unicode
         return False
 
+    def _handle_player_attack(self) -> None:
+        """Handle player attack - check collision with customers and deal damage."""
+        player_rect = self.player.rect
+        player_pos = pygame.Vector2(self.player.x, self.player.y)
+        
+        customers_to_remove = []
+        for customer in self.customers:
+            # Check collision between player and customer
+            if player_rect.colliderect(customer.rect):
+                # Calculate knockback direction (away from player)
+                knockback_direction = customer.position - player_pos
+                if knockback_direction.length_squared() > 0:
+                    knockback_direction.normalize_ip()
+                else:
+                    # If customer is exactly on player, use random direction
+                    import random
+                    angle = random.uniform(0, 2 * 3.14159)
+                    knockback_direction = pygame.Vector2(math.cos(angle), math.sin(angle))
+                
+                # Apply knockback (quarter of a tile - 2x weaker than before)
+                knockback_force = TILE_SIZE * 0.25
+                customer.apply_knockback(knockback_direction, knockback_force)
+                
+                # Deal 1 damage
+                is_dead = customer.take_damage(1)
+                
+                if is_dead:
+                    # Handle customer death
+                    # Check if this is a regular Customer (not ThiefCustomer or LitterCustomer)
+                    was_regular = isinstance(customer, Customer) and not isinstance(customer, ThiefCustomer) and not isinstance(customer, LitterCustomer)
+                    customers_to_remove.append((customer, was_regular))
+                else:
+                    # If hit but not dead, customer should flee (state = "leaving")
+                    if customer.state != "leaving":
+                        customer.state = "leaving"
+                        customer.path = None
+                        customer.path_index = 0
+                        if hasattr(customer, 'leave_pos'):
+                            customer._compute_path(customer.leave_pos)
+        
+        # Handle customer deaths
+        for customer, was_regular in customers_to_remove:
+            self._handle_customer_death(customer, was_regular)
+    
+    def _handle_customer_death(self, customer, was_regular: bool) -> None:
+        """
+        Handle customer death - drop cash and trigger panic mode if regular customer.
+        
+        Args:
+            customer: The customer that died
+            was_regular: True if this was a regular Customer (not ThiefCustomer or LitterCustomer)
+        """
+        # Drop cash at customer position (regardless of type)
+        from entities import Cash
+        self.cash_items.append(Cash(customer.position))
+        
+        # Remove customer from list
+        if customer in self.customers:
+            self.customers.remove(customer)
+        
+        # If was regular customer, trigger panic mode
+        if was_regular:
+            self.panic_mode = True
+            self.spawn_ban_timer = self.SPAWN_BAN_DURATION
+            
+            # Force all customers to flee at player speed
+            for other_customer in self.customers:
+                if other_customer.state != "leaving":
+                    other_customer.state = "leaving"
+                    other_customer.path = None
+                    other_customer.path_index = 0
+                    if hasattr(other_customer, 'leave_pos'):
+                        other_customer._compute_path(other_customer.leave_pos)
+    
     def _start_new_day(self) -> None:
         """Reset game state for a new day."""
         self.current_day += 1
         self.day_timer = 0.0
+        
+        # Reset panic mode and spawn ban
+        self.panic_mode = False
+        self.spawn_ban_timer = 0.0
         # Clear all uncollected dodge coins
         self.cash_items.clear()
         # Clear all customers
@@ -530,9 +710,23 @@ class GameState:
         
         # Check if boss fight should happen this day
         if self.tax_man_boss_fight_next_day:
-            self.game_state = "boss_fight"
-            self.boss_fight_show_flash = True
-            self.boss_fight_flash_timer = 0.0
+            # Start with orange circle approaching instead of immediate boss fight
+            self.game_state = "boss_approaching"
+            # Initialize circle position at door (like a customer)
+            door_centers = self.store_map.find_tile_centers("D")  # TILE_DOOR
+            door_pos = door_centers[0] if door_centers else pygame.Vector2(
+                self.store_map.cols * TILE_SIZE // 2,
+                self.store_map.rows * TILE_SIZE // 2
+            )
+            self.boss_circle_position = pygame.Vector2(door_pos)
+            self.boss_circle_radius = 30.0
+            self.boss_circle_reached = False
+            self.boss_circle_path = None
+            self.boss_circle_path_index = 0
+            # Compute path to player
+            player_pos = pygame.Vector2(self.player.x, self.player.y)
+            self.boss_circle_path = find_path(self.store_map, self.boss_circle_position, player_pos)
+            self.boss_circle_path_index = 0
             self.tax_man_boss_fight_next_day = False  # Reset flag
         else:
             # Reset game state to playing
@@ -589,7 +783,7 @@ class GameState:
                 "sender": "boss",
                 "message": "Fine, you win this time. But don't push your luck."
             })
-            # Don't close automatically - user can close with SPACE
+            # Don't close automatically - user can close with E
             # Increase persuasion bonus for next time (capped at 20%)
             self.tax_man_persuasion_bonus = min(20.0, self.tax_man_persuasion_bonus + 5.0)
         # If not persuaded, continue the conversation (player can keep arguing)

@@ -3,6 +3,7 @@
 import pygame
 
 from config import (
+    COLOR_COMPUTER,
     COLOR_COUNTER,
     COLOR_DOOR,
     COLOR_FLOOR,
@@ -10,6 +11,8 @@ from config import (
     COLOR_OFFICE_DOOR,
     COLOR_SHELF,
     COLOR_WALL,
+    TILE_ACTIVATION,
+    TILE_COMPUTER,
     TILE_COUNTER,
     TILE_DOOR,
     TILE_FLOOR,
@@ -23,7 +26,7 @@ from config import (
 
 # Simple retro-style store: outer walls, some shelves forming aisles.
 STORE_MAP = [
-    "###########O########",
+    "################O###",
     "#..................#",
     "#...N.......CCCCC..#",
     "#.SSSS........N....#",
@@ -42,8 +45,8 @@ OFFICE_MAP = [
     "############",
     "#..........#",
     "#..........#",
-    "#..........#",  # Office door to return to store
-    "#..........#",
+    "#...A......#",  # Activation tile (same color as floor)
+    "#...P......#",  # Computer tile
     "#..........#",
     "###O########",
 ]
@@ -99,7 +102,8 @@ class TileMap:
         
         return valid_positions
 
-    def draw(self, surface: pygame.Surface) -> None:
+    def draw(self, surface: pygame.Surface, shelf_texture: pygame.Surface | None = None, wall_stone_texture: pygame.Surface | None = None, 
+             counter_texture: pygame.Surface | None = None) -> None:
         """Draw the map to the surface."""
         for row in range(self.rows):
             for col in range(self.cols):
@@ -110,20 +114,44 @@ class TileMap:
                 rect = pygame.Rect(x, y, TILE_SIZE, TILE_SIZE)
 
                 if tile == TILE_WALL:
-                    color = COLOR_WALL
+                    # Use blue stone texture if available, otherwise fall back to color
+                    if wall_stone_texture is not None:
+                        surface.blit(wall_stone_texture, rect)
+                    else:
+                        color = COLOR_WALL
+                        pygame.draw.rect(surface, color, rect)
                 elif tile == TILE_SHELF:
-                    color = COLOR_SHELF
+                    # Use shelf texture if available, otherwise fall back to color
+                    if shelf_texture is not None:
+                        surface.blit(shelf_texture, rect)
+                    else:
+                        color = COLOR_SHELF
+                        pygame.draw.rect(surface, color, rect)
                 elif tile == TILE_DOOR:
                     color = COLOR_DOOR
+                    pygame.draw.rect(surface, color, rect)
                 elif tile == TILE_OFFICE_DOOR:
                     color = COLOR_OFFICE_DOOR
+                    pygame.draw.rect(surface, color, rect)
                 elif tile == TILE_COUNTER:
-                    color = COLOR_COUNTER
+                    # Use counter texture if available, otherwise fall back to color
+                    if counter_texture is not None:
+                        surface.blit(counter_texture, rect)
+                    else:
+                        color = COLOR_COUNTER
+                        pygame.draw.rect(surface, color, rect)
                 elif tile == TILE_NODE:
                     # Nodes are invisible - render as floor
                     color = COLOR_FLOOR
+                    pygame.draw.rect(surface, color, rect)
+                elif tile == TILE_COMPUTER:
+                    color = COLOR_COMPUTER
+                    pygame.draw.rect(surface, color, rect)
+                elif tile == TILE_ACTIVATION:
+                    # Activation tile is same color as floor (invisible)
+                    color = COLOR_FLOOR
+                    pygame.draw.rect(surface, color, rect)
                 else:
                     color = COLOR_FLOOR
-
-                pygame.draw.rect(surface, color, rect)
+                    pygame.draw.rect(surface, color, rect)
 

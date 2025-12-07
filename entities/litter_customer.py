@@ -5,7 +5,7 @@ import random
 
 import pygame
 
-from config import COLOR_CUSTOMER, CUSTOMER_RADIUS, CUSTOMER_SPEED, FPS, TILE_FLOOR, TILE_SIZE
+from config import CUSTOMER_RADIUS, CUSTOMER_SPEED, FPS, TILE_FLOOR, TILE_SIZE, generate_random_customer_color
 from map import find_path
 
 
@@ -24,7 +24,16 @@ class LitterCustomer:
         # Spawn at the door position (door tiles are walkable for customers)
         self.position = pygame.Vector2(door_pos)
         self.radius = CUSTOMER_RADIUS
-        self.color = COLOR_CUSTOMER  # Same color as regular customers
+        self.color = generate_random_customer_color()
+        
+        # Health system
+        self.max_health = 3
+        self.health = 3
+        self.show_health_bar = False
+        
+        # Knockback system
+        self.knockback_velocity = pygame.Vector2(0, 0)
+        self.knockback_timer = 0.0
 
         self.door_pos = pygame.Vector2(door_pos)
         self.shelf_targets = shelf_targets or [self.door_pos]
@@ -105,10 +114,91 @@ class LitterCustomer:
             self.radius * 2,
             self.radius * 2,
         )
+    
+    @property
+    def is_alive(self) -> bool:
+        """Check if customer is alive."""
+        return self.health > 0
+    
+    def take_damage(self, amount: int) -> bool:
+        """
+        Apply damage to customer. Returns True if customer dies.
+        
+        Args:
+            amount: Damage amount to apply
+            
+        Returns:
+            True if customer dies (health <= 0), False otherwise
+        """
+        self.health -= amount
+        self.show_health_bar = True
+        if self.health <= 0:
+            self.health = 0
+            return True
+        return False
+    
+    def apply_knockback(self, direction: pygame.Vector2, force: float) -> None:
+        """
+        Apply knockback to customer.
+        
+        Args:
+            direction: Knockback direction (will be normalized)
+            force: Knockback force (distance to knock back)
+        """
+        if direction.length_squared() > 0:
+            direction = direction.normalize()
+            self.knockback_velocity = direction * force
+            self.knockback_timer = 0.3  # Knockback duration in seconds
 
-    def update(self, dt: float, solid_rects: list[pygame.Rect], door_rects: list[pygame.Rect] = None) -> None:
+    def update(self, dt: float, solid_rects: list[pygame.Rect], door_rects: list[pygame.Rect] = None, use_player_speed: bool = False) -> None:
         if door_rects is None:
             door_rects = []
+        
+        # Check if customer is dead
+        if not self.is_alive:
+            self.finished = True
+            return
+        
+        # Apply knockback first
+        if self.knockback_timer > 0.0:
+            knockback_distance = self.knockback_velocity.length() * dt * FPS
+            if knockback_distance > 0:
+                knockback_direction = self.knockback_velocity.normalize() if self.knockback_velocity.length_squared() > 0 else pygame.Vector2(0, 0)
+                knockback_move = knockback_direction * knockback_distance
+                
+                # Try to move with knockback, checking collisions
+                test_pos = self.position + knockback_move
+                test_rect = pygame.Rect(
+                    int(test_pos.x - self.radius),
+                    int(test_pos.y - self.radius),
+                    self.radius * 2,
+                    self.radius * 2,
+                )
+                
+                # Check collision with solid tiles
+                collision = False
+                for tile_rect in solid_rects:
+                    if test_rect.colliderect(tile_rect):
+                        collision = True
+                        break
+                
+                if not collision:
+                    self.position = test_pos
+                # If collision, stop knockback
+                else:
+                    self.knockback_velocity = pygame.Vector2(0, 0)
+                    self.knockback_timer = 0.0
+            
+            # Decay knockback over time
+            self.knockback_timer -= dt
+            if self.knockback_timer <= 0.0:
+                self.knockback_velocity = pygame.Vector2(0, 0)
+                self.knockback_timer = 0.0
+            else:
+                # Reduce knockback velocity over time
+                decay_rate = 0.9  # Reduce by 10% per frame
+                self.knockback_velocity *= decay_rate
+        
         if self.state == "entering":
             # Allow corner cutting when entering
             if self._move_towards(self.door_pos, dt, solid_rects, proximity_threshold=TILE_SIZE * 0.3, door_rects=door_rects, allow_corner_cutting=True):
@@ -425,7 +515,7 @@ class LitterCustomer:
             )
             self._compute_path(self.browsing_target)
 
-    def _move_towards(self, target: pygame.Vector2, dt: float, solid_rects: list[pygame.Rect], proximity_threshold: float = TILE_SIZE * 0.3, door_rects: list[pygame.Rect] = None, allow_corner_cutting: bool = False) -> bool:
+    def _move_towards(self, target: pygame.Vector2, dt: float, solid_rects: list[pygame.Rect], proximity_threshold: float = TILE_SIZE * 0.3, door_rects: list[pygame.Rect] = None, allow_corner_cutting: bool = False, use_player_speed: bool = False) -> bool:
         """
         Move towards target with collision detection. Returns True when within proximity_threshold.
         If allow_corner_cutting is True, allows slight phasing through obstacles to cut corners.
@@ -442,8 +532,11 @@ class LitterCustomer:
             return True
 
         direction.normalize_ip()
+        # Use player speed if in panic mode, otherwise use customer speed
+        from config import PLAYER_SPEED
+        speed = PLAYER_SPEED if use_player_speed else CUSTOMER_SPEED
         # Move per-frame like the player (multiply by FPS to convert from per-second to per-frame)
-        step = CUSTOMER_SPEED * dt * FPS
+        step = speed * dt * FPS
         
         # Calculate movement vector
         move_x = direction.x * step

@@ -35,13 +35,22 @@ class CustomerSpawner:
         # Random initial delay to prevent all customers spawning at once
         self.next_spawn_in = random.uniform(min_spawn_delay, max_spawn_delay)
 
-    def update(self, dt: float, customers: list[Union[Customer, ThiefCustomer, LitterCustomer]]) -> Union[Customer, ThiefCustomer, LitterCustomer] | None:
+    def update(self, dt: float, customers: list[Union[Customer, ThiefCustomer, LitterCustomer]], spawn_ban_active: bool = False) -> Union[Customer, ThiefCustomer, LitterCustomer] | None:
         """
         Update spawner and return a new customer if one should spawn, None otherwise.
         Allows up to 6 customers at a time with randomized spawning.
         Randomly chooses customer type: 70% regular, 15% thief, 15% litter.
+        
+        Args:
+            dt: Delta time
+            customers: Current list of customers
+            spawn_ban_active: If True, no new customers will spawn
         """
         MAX_CUSTOMERS = 6
+        
+        # Don't spawn if ban is active
+        if spawn_ban_active:
+            return None
         
         # Only spawn if we have fewer than max customers
         if len(customers) < MAX_CUSTOMERS:
