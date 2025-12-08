@@ -183,6 +183,24 @@ class Renderer:
         except (pygame.error, FileNotFoundError):
             print(f"Warning: Could not load battle scene image: {battle_scene_path}")
             self.battle_scene_image = None
+
+        # Load player portrait for boss fight (circular crop)
+        self.player_boss_image: pygame.Surface | None = None
+        try:
+            player_boss_path = "assets/imgs/Playerbf.jpg"
+            self.player_boss_image = self._load_circular_image(player_boss_path)
+        except (pygame.error, FileNotFoundError) as e:
+            print(f"Warning: Could not load player boss image: {e}")
+            self.player_boss_image = None
+        
+        # Load boss portrait (tax boss) for top-right display
+        self.tax_boss_image: pygame.Surface | None = None
+        try:
+            tax_boss_path = "assets/imgs/TaxBoss.jpg"
+            self.tax_boss_image = pygame.image.load(tax_boss_path).convert_alpha()
+        except (pygame.error, FileNotFoundError) as e:
+            print(f"Warning: Could not load tax boss image: {e}")
+            self.tax_boss_image = None
         
         # Load wall texture
         self.wall_texture: pygame.Surface | None = None
@@ -209,6 +227,54 @@ class Renderer:
         
         # Falling cash for main menu background
         self.falling_cash: list[dict] = []  # List of {pos: Vector2, speed: float} dicts
+        
+        # Load computer images
+        self.computer_images = []
+        from config import TILE_SIZE
+        for i in range(1, 4):
+            try:
+                img = pygame.image.load(f"assets/imgs/Computer{i}.png").convert_alpha()
+                img = pygame.transform.scale(img, (TILE_SIZE, TILE_SIZE))
+                self.computer_images.append(img)
+            except Exception as e:
+                print(f"Warning: Could not load Computer{i}.png: {e}")
+                self.computer_images.append(None)
+
+        # Load optional weapon icons for mystery box
+        self.mystery_item_icons: dict[str, pygame.Surface | None] = {}
+        for key in ("nuke", "water_gun", "paper_plane"):
+            path = f"assets/imgs/{key}.png"
+            try:
+                icon = pygame.image.load(path).convert_alpha()
+                # Scale to a readable size for the table rows
+                icon = pygame.transform.scale(icon, (72, 72))
+                self.mystery_item_icons[key] = icon
+            except Exception as e:
+                print(f"Warning: Could not load {path}: {e}")
+                self.mystery_item_icons[key] = None
+
+        # Background screen image used when a computer UI is opened
+        self.computer_screen_image: pygame.Surface | None = None
+        try:
+            self.computer_screen_image = pygame.image.load("assets/imgs/Screen.png").convert_alpha()
+        except Exception as e:
+            print(f"Warning: Could not load Screen.png: {e}")
+
+        # Boss player portrait animation state
+        self.player_boss_slide_active: bool = False
+        self.player_boss_slide_start_ms: int | None = None
+        self.player_boss_slide_duration: float = 0.6  # seconds
+        self.player_boss_last_flash_active: bool = False
+        self.player_boss_bob_phase: float = 0.0  # seconds accumulator for subtle bob
+        # Tax boss portrait animation state
+        self.tax_boss_slide_active: bool = False
+        self.tax_boss_slide_start_ms: int | None = None
+        self.tax_boss_slide_duration: float = 0.6  # seconds
+        self.tax_boss_last_flash_active: bool = False
+        self.tax_boss_bob_phase: float = 0.0
+
+        # Store rects for tax man side buttons
+        self.tax_side_buttons = {}
 
     def clear(self) -> None:
         """Clear the screen with background color."""
@@ -217,7 +283,7 @@ class Renderer:
     def draw_map(self, tile_map: TileMap) -> None:
         """Draw the tile map."""
         tile_map.draw(self.screen, shelf_texture=self.shelf_texture, wall_stone_texture=self.wall_stone_texture,
-                     counter_texture=self.counter_texture)
+                     counter_texture=self.counter_texture, computer_images=self.computer_images)
     
     def draw_room_with_camera(
         self,
@@ -272,6 +338,7 @@ class Renderer:
                     from config import (
                         COLOR_COMPUTER, COLOR_COUNTER, COLOR_DOOR, COLOR_FLOOR, COLOR_NODE,
                         COLOR_OFFICE_DOOR, COLOR_SHELF, COLOR_WALL, TILE_ACTIVATION,
+                        TILE_ACTIVATION_1, TILE_ACTIVATION_2, TILE_ACTIVATION_3,
                         TILE_COMPUTER, TILE_COUNTER, TILE_DOOR, TILE_FLOOR, TILE_NODE,
                         TILE_OFFICE_DOOR, TILE_SHELF, TILE_WALL
                     )
@@ -307,9 +374,18 @@ class Renderer:
                         color = COLOR_FLOOR
                         pygame.draw.rect(self.screen, color, rect)
                     elif tile == TILE_COMPUTER:
-                        color = COLOR_COMPUTER
-                        pygame.draw.rect(self.screen, color, rect)
-                    elif tile == TILE_ACTIVATION:
+                        # Determine which computer to draw based on column
+                        comp_idx = -1
+                        if col == 1: comp_idx = 0
+                        elif col == 5: comp_idx = 1
+                        elif col == 9: comp_idx = 2
+                        
+                        if 0 <= comp_idx < len(self.computer_images) and self.computer_images[comp_idx]:
+                            self.screen.blit(self.computer_images[comp_idx], rect)
+                        else:
+                            color = COLOR_COMPUTER
+                            pygame.draw.rect(self.screen, color, rect)
+                    elif tile in [TILE_ACTIVATION, TILE_ACTIVATION_1, TILE_ACTIVATION_2, TILE_ACTIVATION_3]:
                         # Activation tile is same color as floor (invisible)
                         color = COLOR_FLOOR
                         pygame.draw.rect(self.screen, color, rect)
@@ -635,7 +711,12 @@ class Renderer:
         input_mode: bool = False,
         player_argument: str = "",
         conversation: list[dict[str, str]] = None,
-        boss_fight_triggered: bool = False
+        boss_fight_triggered: bool = False,
+        show_flash: bool = False,
+        flash_timer: float = 0.0,
+        flash_duration: float = 0.3,
+        fade_alpha: int = 255,
+        menu_locked: bool = False
     ) -> None:
         """
         Draw tax man screen with menu options inside an iPhone frame.
@@ -648,7 +729,18 @@ class Renderer:
             input_mode: Whether player is typing their argument
             player_argument: The text the player has typed
             conversation: List of conversation messages [{"sender": "player"/"boss", "message": "..."}, ...]
+            fade_alpha: Alpha value for fade out (255 = fully visible, 0 = invisible)
         """
+        # If fading out, we need to draw everything to a temporary surface first
+        original_screen = self.screen
+        if fade_alpha < 255:
+            # Create transparent surface
+            screen_width, screen_height = original_screen.get_size()
+            temp_surface = pygame.Surface((screen_width, screen_height), pygame.SRCALPHA)
+            temp_surface.fill((0, 0, 0, 0)) # Clear transparent
+            # Temporarily swap self.screen to target the temp surface
+            self.screen = temp_surface
+            
         if conversation is None:
             conversation = []
         # Reset Venmo bubble rect (will be set if we draw it)
@@ -872,53 +964,99 @@ class Renderer:
             
             current_y += msg_bubble_height + 10  # Space between messages
         
-        # Show "thinking" indicator if awaiting response
-        if awaiting_response:
-            thinking_y = current_y if current_y > conversation_start_y else conversation_start_y
-            # Make sure thinking indicator is visible (within scrollable area)
-            if thinking_y < input_box_top - 20:
-                thinking_text = "Tax Dude is typing..."
-                thinking_surface = small_font.render(thinking_text, True, (150, 150, 150))
-                thinking_rect = thinking_surface.get_rect()
-                thinking_rect.left = screen_x + left_margin
-                thinking_rect.top = thinking_y
-                if thinking_y > conversation_start_y:
-                    self.screen.blit(thinking_surface, thinking_rect)
-            current_y = thinking_y + 30
-        
-        # Always draw input box at the bottom (only if boss fight not triggered)
-        if not boss_fight_triggered:
-            input_box_height = 50
-            input_box_margin = 10
-            input_box_y = screen_y + screen_h - input_box_height - input_box_margin
-            input_box_width = screen_w - 40
-            input_box_x = screen_x + (screen_w - input_box_width) // 2
-            
-            # Draw input box background (white with border)
-            input_box_rect = pygame.Rect(input_box_x, input_box_y, input_box_width, input_box_height)
-            pygame.draw.rect(self.screen, (255, 255, 255), input_box_rect, border_radius=10)
-            pygame.draw.rect(self.screen, (200, 200, 200), input_box_rect, width=2, border_radius=10)
-            
-            # Draw player's input text with cursor
-            input_text = player_argument + "_"  # Cursor
-            input_lines = self._wrap_text(input_text, input_font, input_box_width - 20, text_color)
-            
-            for i, line in enumerate(input_lines):
-                line_surface = input_font.render(line, True, text_color)
-                line_rect = line_surface.get_rect()
-                line_rect.left = input_box_x + 15
-                line_rect.centery = input_box_y + input_box_height // 2 + i * 24 - (len(input_lines) - 1) * 12
-                self.screen.blit(line_surface, line_rect)
-        
-        # Instructions at very bottom
+        # Instructions at very bottom (typing removed)
         if boss_fight_triggered:
             instruction = "Press E to close"
         else:
-            instruction = "Type a message and press ENTER to send. Click Venmo to pay. Press E to close."
+            instruction = "Use arrows + Enter: Excuse / Argue / Romance / Pay. Press E to close."
+        # When locked (paid or mad), force the simpler instruction
+        if menu_locked:
+            instruction = "Resolved. Press E to close."
         instruction_surface = pygame.font.SysFont(None, 16).render(instruction, True, (150, 150, 150))
         instruction_rect = instruction_surface.get_rect(center=(screen_x + screen_w // 2, screen_y + screen_h - 2))
         self.screen.blit(instruction_surface, instruction_rect)
+
+        # Draw side buttons for quick actions
+        # Move more to the right (+50) and bottom (+200 starts lower)
+        self._draw_tax_side_buttons(screen_x + screen_w + 50, screen_y + 200, menu_selection, disabled=menu_locked)
+
+        # Draw flash effect (white overlay)
+        if show_flash and flash_timer < flash_duration:
+            # Calculate flash intensity (starts at 255, fades to 0)
+            progress = flash_timer / flash_duration
+            # Use ease-out for smoother fade
+            fade_progress = 1.0 - (1.0 - progress) * (1.0 - progress)
+            
+            # Inverse: 1.0 -> 0.0
+            flash_alpha = int(255 * (1.0 - progress))
+            
+            if flash_alpha > 0:
+                # Create a white surface with alpha for the flash
+                screen_width, screen_height = self.screen.get_size()
+                flash_surface = pygame.Surface((screen_width, screen_height))
+                flash_surface.fill((255, 255, 255))
+                flash_surface.set_alpha(flash_alpha)
+                self.screen.blit(flash_surface, (0, 0))
+
+                flash_surface.set_alpha(flash_alpha)
+                self.screen.blit(flash_surface, (0, 0))
+
+        if fade_alpha < 255:
+            # Restore original screen first!
+            self.screen = original_screen
+            temp_surface.set_alpha(fade_alpha)
+            self.screen.blit(temp_surface, (0, 0))
     
+    def _draw_tax_side_buttons(self, start_x: int, start_y: int, selected_index: int = 0, disabled: bool = False) -> None:
+        """Draw 4 menu options on the side of the phone."""
+        buttons = [
+            "Valid Excuse",
+            "Argue",
+            "Romance",
+            "Pay"
+        ]
+        
+        # Simple list layout
+        button_height = 60
+        spacing = 40
+        
+        # Pixelated text setup
+        base_font_size = 24
+        scale_factor = 2
+        font = pygame.font.SysFont("monospace", base_font_size)
+        
+        self.tax_side_buttons = {}
+        
+        for i, label in enumerate(buttons):
+            y = start_y + i * (button_height + spacing)
+            
+            # Use > for selected item
+            if disabled:
+                display_label = f"  {label}"
+                color = (140, 140, 140)
+            else:
+                display_label = f"> {label}" if i == selected_index else f"  {label}"
+                color = (255, 255, 0) if i == selected_index else (255, 255, 255)
+            
+            # Draw pixelated text
+            text_surface = font.render(display_label, True, color)
+            # Scale up
+            scaled_surface = pygame.transform.scale(
+                text_surface, 
+                (text_surface.get_width() * scale_factor, text_surface.get_height() * scale_factor)
+            )
+            
+            # Position
+            rect = scaled_surface.get_rect(topleft=(start_x, y))
+            self.screen.blit(scaled_surface, rect)
+            
+            # Store rect for mouse click support (optional but good to keep)
+            # Remove the "> " part for the mapping key logic, but keep rect coverage
+            # Actually, standard hit rect might need to be wider?
+            # Let's clean up label for dict key logic if I want to keep click support
+            # Original code used label name as key.
+            self.tax_side_buttons[label] = rect
+
     def is_venmo_bubble_clicked(self, mouse_pos: tuple[int, int]) -> bool:
         """
         Check if the mouse position is within the Venmo bubble.
@@ -932,6 +1070,18 @@ class Renderer:
         if self.venmo_bubble_rect is None:
             return False
         return self.venmo_bubble_rect.collidepoint(mouse_pos)
+
+    def get_tax_side_button_clicked(self, mouse_pos: tuple[int, int]) -> str | None:
+        """
+        Check which side button was clicked.
+        
+        Returns:
+            Label of the clicked button or None
+        """
+        for label, rect in self.tax_side_buttons.items():
+            if rect.collidepoint(mouse_pos):
+                return label
+        return None
     
     def _wrap_text(self, text: str, font: pygame.font.Font, max_width: int, text_color: tuple[int, int, int] = COLOR_DAY_OVER_TEXT) -> list[str]:
         """Wrap text to fit within max_width."""
@@ -1011,9 +1161,217 @@ class Renderer:
         text_rect = pixelated_surface.get_rect()
         text_rect.topright = (self.screen.get_width() - 30, 10)
         self.screen.blit(pixelated_surface, text_rect)
+
+    def draw_mystery_box_screen(
+        self,
+        coins: int,
+        items: list[dict],
+        owned: dict[str, bool],
+        message: str,
+        last_item: dict | None = None,
+        nuke_triggered: bool = False,
+        computer_image: pygame.Surface | None = None,
+    ) -> None:
+        """Render the Computer 2 mystery box UI."""
+        # Prefer shared computer screen background if available
+        if computer_image is None and self.computer_screen_image is not None:
+            computer_image = self.computer_screen_image
+
+        # Nuke result: full white game over screen
+        if nuke_triggered:
+            self.screen.fill((255, 255, 255))
+            title_font = pygame.font.SysFont("monospace", 72, bold=True)
+            body_font = pygame.font.SysFont("monospace", 32)
+            title_surface = title_font.render("GAME OVER", True, (10, 10, 10))
+            title_rect = title_surface.get_rect(center=(self.screen.get_width() // 2, 240))
+            self.screen.blit(title_surface, title_rect)
+
+            subtitle = "Nuke detonated from the mystery box."
+            subtitle_surface = body_font.render(subtitle, True, (30, 30, 30))
+            subtitle_rect = subtitle_surface.get_rect(center=(self.screen.get_width() // 2, 320))
+            self.screen.blit(subtitle_surface, subtitle_rect)
+
+            prompt_surface = body_font.render("Press Enter/Esc/E to leave.", True, (40, 40, 40))
+            prompt_rect = prompt_surface.get_rect(center=(self.screen.get_width() // 2, 400))
+            self.screen.blit(prompt_surface, prompt_rect)
+            return
+
+        self.screen.fill(COLOR_BG)
+
+        # Draw computer image as background if available
+        if computer_image:
+            s_w, s_h = self.screen.get_size()
+            img_w, img_h = computer_image.get_size()
+            scale = min(s_w / img_w, s_h / img_h) * 0.8
+            new_size = (int(img_w * scale), int(img_h * scale))
+            scaled_img = pygame.transform.scale(computer_image, new_size)
+            rect = scaled_img.get_rect(center=(s_w // 2, s_h // 2))
+            self.screen.blit(scaled_img, rect)
+
+        title_font = pygame.font.SysFont("monospace", 56, bold=True)
+        body_font = pygame.font.SysFont("monospace", 28)
+        reel_font = pygame.font.SysFont("monospace", 72, bold=True)
+        small_font = pygame.font.SysFont("monospace", 22)
+
+        # Title aligned similar to Computer 1 layout
+        title_surface = title_font.render("Mystery Box", True, (0, 0, 0))
+        title_rect = title_surface.get_rect(center=(self.screen.get_width() // 2, 200))
+        self.screen.blit(title_surface, title_rect)
+
+        # Reel-style symbols line (use simple symbols instead of names; highlight last pull)
+        # Card-style symbols
+        symbol_map = [
+            ("nuke", "♠"),         # spade
+            ("water_gun", "♥"),    # heart
+            ("paper_plane", "♦"),  # diamond
+            ("nothing", "♣"),      # club
+        ]
+        reels_items = []
+        last_key = last_item.get("key", "") if last_item else ""
+        for key, sym in symbol_map:
+            if key == last_key:
+                reels_items.append(f"[{sym}]")
+            else:
+                reels_items.append(sym)
+        reel_text = " | ".join(reels_items)
+        reel_surface = reel_font.render(reel_text, True, (0, 0, 0))
+        reel_rect = reel_surface.get_rect(center=(self.screen.get_width() // 2, 416))
+        self.screen.blit(reel_surface, reel_rect)
+
+        # Coins and pricing (placed where coins/bet would be)
+        coins_surface = body_font.render(f"Coins: {coins}", True, (0, 0, 0))
+        coins_rect = coins_surface.get_rect(center=(self.screen.get_width() // 2, 496))
+        self.screen.blit(coins_surface, coins_rect)
+
+        cost_surface = body_font.render("Roll: 5 coins (Enter)   |   Nuke: 100 coins (N)", True, (0, 0, 0))
+        cost_rect = cost_surface.get_rect(center=(self.screen.get_width() // 2, 536))
+        self.screen.blit(cost_surface, cost_rect)
+
+        # Inventory summary
+        inv_strings = []
+        for key, label in [("nuke", "Nuke"), ("water_gun", "Water Gun"), ("paper_plane", "Paper Plane")]:
+            owned_flag = owned.get(key, False)
+            inv_strings.append(f"[{'X' if owned_flag else ' '}] {label}")
+        inv_text = "Owned: " + " | ".join(inv_strings)
+        inv_surface = body_font.render(inv_text, True, (0, 0, 0))
+        inv_rect = inv_surface.get_rect(center=(self.screen.get_width() // 2, 576))
+        self.screen.blit(inv_surface, inv_rect)
+
+        # Message line
+        message_surface = body_font.render(message, True, (0, 0, 0))
+        message_rect = message_surface.get_rect(center=(self.screen.get_width() // 2, 616))
+        self.screen.blit(message_surface, message_rect)
+
+        # Instructions (aligned near bottom like slot machine)
+        instructions = [
+            "Enter: Roll (5 coins)",
+            "N: Buy guaranteed Nuke (100 coins)",
+            "E or Esc: Leave computer",
+        ]
+        inst_y = 696
+        for line in instructions:
+            line_surface = small_font.render(line, True, (0, 0, 0))
+            line_rect = line_surface.get_rect(center=(self.screen.get_width() // 2, inst_y))
+            self.screen.blit(line_surface, line_rect)
+            inst_y += 26
+
+    def draw_slot_machine_screen(self, coins: int, bet: int, reels: list[str], message: str, computer_image: pygame.Surface | None = None) -> None:
+        """Render a simple slot machine UI."""
+        # Prefer shared computer screen background if available
+        if computer_image is None and self.computer_screen_image is not None:
+            computer_image = self.computer_screen_image
+
+        self.screen.fill(COLOR_BG)
+
+        # Draw computer image as background if available
+        if computer_image:
+            # Scale to verify it's visible (fit screen mostly)
+            s_w, s_h = self.screen.get_size()
+            img_w, img_h = computer_image.get_size()
+            
+            # Use nearest neighbor scaling for pixel art
+            scale = min(s_w / img_w, s_h / img_h) * 0.8  # 80% screen size
+            new_size = (int(img_w * scale), int(img_h * scale))
+            
+            scaled_img = pygame.transform.scale(computer_image, new_size)
+            rect = scaled_img.get_rect(center=(s_w // 2, s_h // 2))
+            self.screen.blit(scaled_img, rect)
+
+
+        title_font = pygame.font.SysFont("monospace", 56, bold=True)
+        body_font = pygame.font.SysFont("monospace", 32)
+        reel_font = pygame.font.SysFont("monospace", 72, bold=True)
+
+        # Title
+        title_surface = title_font.render("Galaxy Slots", True, (0, 0, 0))
+        title_rect = title_surface.get_rect(center=(self.screen.get_width() // 2, 200))
+        self.screen.blit(title_surface, title_rect)
+
+        # Reels
+        reel_text = " | ".join(reels) if reels else "X | O | X"
+        reel_surface = reel_font.render(reel_text, True, (0, 0, 0))
+        reel_rect = reel_surface.get_rect(center=(self.screen.get_width() // 2, 416))
+        self.screen.blit(reel_surface, reel_rect)
+
+        # Balance and bet input
+        coins_surface = body_font.render(f"Coins: {coins}", True, (0, 0, 0))
+        coins_rect = coins_surface.get_rect(center=(self.screen.get_width() // 2, 496))
+        self.screen.blit(coins_surface, coins_rect)
+
+        bet_surface = body_font.render(f"Bet: {bet}", True, (0, 0, 0))
+        bet_rect = bet_surface.get_rect(center=(self.screen.get_width() // 2, 536))
+        self.screen.blit(bet_surface, bet_rect)
+
+        # Message line
+        message_surface = body_font.render(message, True, (0, 0, 0))
+        message_rect = message_surface.get_rect(center=(self.screen.get_width() // 2, 616))
+        self.screen.blit(message_surface, message_rect)
+
+        # Instructions
+        instructions = [
+            "Press W or Up to increase bet.",
+            "Press S or Down to decrease bet.",
+            "Press Enter to spin.",
+            "Press E or Esc to leave."
+        ]
+        y = 696
+        for line in instructions:
+            line_surface = body_font.render(line, True, (0, 0, 0))
+            line_rect = line_surface.get_rect(center=(self.screen.get_width() // 2, y))
+            self.screen.blit(line_surface, line_rect)
+            y += 38
+
+    def draw_rain_bet_screen(self, computer_image: pygame.Surface | None = None) -> None:
+        """Render Computer 3 Rain Bet placeholder."""
+        if computer_image is None and self.computer_screen_image is not None:
+            computer_image = self.computer_screen_image
+
+        self.screen.fill(COLOR_BG)
+
+        if computer_image:
+            s_w, s_h = self.screen.get_size()
+            img_w, img_h = computer_image.get_size()
+            scale = min(s_w / img_w, s_h / img_h) * 0.8
+            new_size = (int(img_w * scale), int(img_h * scale))
+            scaled_img = pygame.transform.scale(computer_image, new_size)
+            rect = scaled_img.get_rect(center=(s_w // 2, s_h // 2))
+            self.screen.blit(scaled_img, rect)
+
+        title_font = pygame.font.SysFont("monospace", 56, bold=True)
+        reel_font = pygame.font.SysFont("monospace", 72, bold=True)
+
+        title_surface = title_font.render("Rain Bet", True, (0, 0, 0))
+        title_rect = title_surface.get_rect(center=(self.screen.get_width() // 2, 200))
+        self.screen.blit(title_surface, title_rect)
+
+        # Place text where slot reels normally sit
+        reel_surface = reel_font.render("Unavailable", True, (0, 0, 0))
+        reel_rect = reel_surface.get_rect(center=(self.screen.get_width() // 2, 416))
+        self.screen.blit(reel_surface, reel_rect)
     
     def draw_boss_fight_screen(self, show_flash: bool = False, flash_timer: float = 0.0, flash_duration: float = 0.3, 
-                               boss_health: float = 100.0, player_health: float = 100.0, menu_selection: int = 0) -> None:
+                               boss_health: float = 100.0, player_health: float = 100.0, menu_selection: int = 0,
+                               fight_options: list[dict] | None = None, fight_prompt: str = "") -> None:
         """
         Draw boss fight screen using BattleScene.png image with Pokemon-style flash effect.
         
@@ -1063,19 +1421,107 @@ class Renderer:
             self.screen.blit(scaled_image, (x, y))
             battle_scene_drawn = True
         
-        # Pokemon-style flash effect: bright white flash that fades out
-        if show_flash and flash_timer < flash_duration:
-            # Calculate flash intensity (starts at 255, fades to 0)
-            progress = flash_timer / flash_duration
-            # Use a curve for smoother fade (ease out)
-            fade_progress = 1.0 - (progress * progress)  # Quadratic ease out
-            flash_alpha = int(255 * fade_progress)
+        # Draw player portrait near player health area (slide in after flash)
+        if self.player_boss_image is not None:
+            # Track flash state to start slide after transition
+            if show_flash and flash_timer < flash_duration:
+                self.player_boss_last_flash_active = True
+                self.player_boss_slide_active = False
+                self.player_boss_slide_start_ms = None
+                # Do not draw during flash
+                pass
+            elif self.player_boss_last_flash_active:
+                self.player_boss_slide_active = True
+                self.player_boss_slide_start_ms = pygame.time.get_ticks()
+                self.player_boss_last_flash_active = False
             
-            # Create a white surface with alpha for the flash
-            flash_surface = pygame.Surface((screen_width, screen_height))
-            flash_surface.fill((255, 255, 255))
-            flash_surface.set_alpha(flash_alpha)
-            self.screen.blit(flash_surface, (0, 0))
+            # Skip drawing if flash is still running
+            if show_flash and flash_timer < flash_duration:
+                pass
+            else:
+
+                img_w, img_h = self.player_boss_image.get_size()
+                # Larger footprint (allow upscale if source is small)
+                max_w = int(screen_width * 0.30)
+                max_h = int(screen_height * 0.45)
+                scale = min(max_w / img_w, max_h / img_h)
+                # Soft cap to avoid extreme blow-up
+                scale = min(scale, 2.0)
+                new_size = (int(img_w * scale), int(img_h * scale))
+                scaled_img = pygame.transform.scale(self.player_boss_image, new_size)
+                # Position above the bottom margin, to the left of the player health bar
+                margin_x = 380
+                margin_y = 140
+                pos_x = margin_x
+                if self.player_boss_slide_active and self.player_boss_slide_start_ms is not None:
+                    elapsed = (pygame.time.get_ticks() - self.player_boss_slide_start_ms) / 1000.0
+                    duration = max(0.05, self.player_boss_slide_duration)
+                    t = max(0.0, min(1.0, elapsed / duration))
+                    # Start fully off-screen to the left
+                    start_x = int(-new_size[0] * 1.1)
+                    # Ease-out quad
+                    eased = 1 - (1 - t) * (1 - t)
+                    pos_x = start_x + (margin_x - start_x) * eased
+                    if t >= 1.0:
+                        self.player_boss_slide_active = False
+                # Quicker, more noticeable vertical bob (~2s cycle, slightly larger)
+                self.player_boss_bob_phase = (self.player_boss_bob_phase + (1 / 60.0)) % 2.0
+                bob_offset = math.sin((self.player_boss_bob_phase / 2.0) * 2 * math.pi) * 6
+                pos_y = screen_height - new_size[1] - margin_y + bob_offset
+                self.screen.blit(scaled_img, (pos_x, pos_y))
+        
+        # Draw tax boss portrait at top right (after flash to avoid overlap)
+        if self.tax_boss_image is not None and (not show_flash or flash_timer >= flash_duration):
+            img_w, img_h = self.tax_boss_image.get_size()
+            max_w = int(screen_width * 0.20)
+            max_h = int(screen_height * 0.25)
+            scale = min(max_w / img_w, max_h / img_h)
+            scale = min(scale, 2.0)
+            new_size = (int(img_w * scale), int(img_h * scale))
+            scaled_img = pygame.transform.scale(self.tax_boss_image, new_size)
+            # Position inset further left/down
+            margin_x = 470
+            margin_y = 230
+            pos_x = screen_width - new_size[0] - margin_x
+            pos_y = margin_y
+            self.screen.blit(scaled_img, (pos_x, pos_y))
+
+        # Boss intro transition: black -> expanding white circle -> white closing to center
+        if show_flash and flash_timer < flash_duration:
+            progress = max(0.0, min(1.0, flash_timer / max(flash_duration, 1e-6)))
+            stage1_end = 0.2  # Black screen hold
+            stage2_end = 0.6  # Expanding circle completes, white screen reached
+            
+            if progress < stage1_end:
+                # Full black screen
+                self.screen.fill((0, 0, 0))
+            elif progress < stage2_end:
+                # Black background with an expanding white circle from the center
+                self.screen.fill((0, 0, 0))
+                circle_progress = (progress - stage1_end) / (stage2_end - stage1_end)
+                circle_progress = max(0.0, min(1.0, circle_progress))
+                max_radius = int(math.hypot(screen_width, screen_height) * 0.6)
+                radius = int(max_radius * circle_progress)
+                if radius > 0:
+                    pygame.draw.circle(
+                        self.screen,
+                        (255, 255, 255),
+                        (screen_width // 2, screen_height // 2),
+                        radius
+                    )
+            else:
+                # White screen that closes from top and bottom toward the center
+                band_progress = (progress - stage2_end) / max(1e-6, (1.0 - stage2_end))
+                band_progress = max(0.0, min(1.0, band_progress))
+                cover_height = int((screen_height / 2) * (1.0 - band_progress))
+                if cover_height > 0:
+                    # Draw white bands from the top and bottom inward
+                    pygame.draw.rect(self.screen, (255, 255, 255), (0, 0, screen_width, cover_height))
+                    pygame.draw.rect(
+                        self.screen,
+                        (255, 255, 255),
+                        (0, screen_height - cover_height, screen_width, cover_height)
+                    )
         
         # Fallback if image not loaded
         if not battle_scene_drawn:
@@ -1109,7 +1555,13 @@ class Renderer:
             MENU_BUTTONS_Y = 1100 # 400 pixels from bottom (moved up)
             BUTTON_SPACING = 80  # Space between buttons (closer together)
             # =================================================
-            self._draw_boss_fight_menu(MENU_BUTTONS_X, MENU_BUTTONS_Y, BUTTON_SPACING, menu_selection)
+            self._draw_boss_fight_menu(MENU_BUTTONS_X, MENU_BUTTONS_Y, BUTTON_SPACING, menu_selection, fight_options or [])
+            
+            # Draw prompt near menu (pixelated text only, no box)
+            if fight_prompt:
+                prompt_font = pygame.font.SysFont("monospace", 40, bold=True)
+                prompt_surface = prompt_font.render(fight_prompt, True, (255, 255, 255))
+                self.screen.blit(prompt_surface, (MENU_BUTTONS_X - 1330, MENU_BUTTONS_Y + 10))
     
     def _get_health_bar_color(self, health: float) -> tuple:
         """
@@ -1183,6 +1635,38 @@ class Renderer:
                 health_x = x
             health_rect = pygame.Rect(health_x, y, filled_width, height)
             pygame.draw.rect(self.screen, bar_color, health_rect)
+
+    def _load_circular_image(self, path: str) -> pygame.Surface | None:
+        """
+        Load an image and crop it to a circle with transparent background.
+        Returns a surface with per-pixel alpha or None on failure.
+        """
+        try:
+            img = pygame.image.load(path).convert_alpha()
+        except Exception as e:
+            print(f"Warning: Could not load image {path}: {e}")
+            return None
+        
+        w, h = img.get_size()
+        size = min(w, h)
+        
+        # Create square surface and center-crop
+        square_surface = pygame.Surface((size, size), pygame.SRCALPHA)
+        offset_x = (w - size) // 2
+        offset_y = (h - size) // 2
+        square_surface.blit(img, (-offset_x, -offset_y))
+        
+        # Create circular mask
+        mask = pygame.Surface((size, size), pygame.SRCALPHA)
+        # Slightly smaller radius for a tighter crop
+        radius = int((size // 2) * 0.78)
+        pygame.draw.circle(mask, (255, 255, 255, 255), (size // 2, size // 2), radius)
+        # Cut off bottom half
+        pygame.draw.rect(mask, (0, 0, 0, 0), (0, size // 2, size, size // 2))
+        
+        # Apply mask (multiply alpha)
+        square_surface.blit(mask, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
+        return square_surface
     
     def _generate_shelf_texture(self) -> pygame.Surface:
         """
@@ -1388,9 +1872,9 @@ class Renderer:
         
         return texture
     
-    def _draw_boss_fight_menu(self, x: int, y: int, spacing: int, selection: int) -> None:
+    def _draw_boss_fight_menu(self, x: int, y: int, spacing: int, selection: int, fight_options: list[dict]) -> None:
         """
-        Draw the boss fight menu buttons (Fight, Bag, Pay).
+        Draw the boss fight menu buttons.
         
         Args:
             x: X position of button group (left side)
@@ -1398,13 +1882,21 @@ class Renderer:
             spacing: Vertical spacing between buttons
             selection: Currently selected button index (0 = Fight, 1 = Bag, 2 = Pay)
         """
-        buttons = ["Fight", "Bag", "Pay"]
+        buttons = fight_options if fight_options else [
+            {"label": "Logic", "enabled": True},
+            {"label": "Nuke", "enabled": False},
+            {"label": "Water Gun", "enabled": False},
+            {"label": "Paper Plane", "enabled": False},
+        ]
         bold_font = pygame.font.SysFont(None, 108)  # 3x bigger (36 * 3 = 108)
         bold_font.set_bold(True)
         text_color = (255, 255, 255)  # White text
         selected_color = (255, 255, 100)  # Yellow for selected
+        disabled_color = (140, 140, 140)
         
-        for i, button_text in enumerate(buttons):
+        for i, button_data in enumerate(buttons):
+            label = button_data.get("label", "Option")
+            enabled = button_data.get("enabled", False)
             button_y = y + (i * spacing)
             is_selected = (i == selection)
             
@@ -1414,8 +1906,8 @@ class Renderer:
                 self.screen.blit(indicator, (x - 75, button_y))  # 3x spacing (25 * 3 = 75)
             
             # Draw button text
-            color = selected_color if is_selected else text_color
-            text_surface = bold_font.render(button_text, True, color)
+            base_color = selected_color if is_selected else (text_color if enabled else disabled_color)
+            text_surface = bold_font.render(label, True, base_color)
             self.screen.blit(text_surface, (x, button_y))
     
     def _initialize_falling_cash(self) -> None:
@@ -1466,16 +1958,39 @@ class Renderer:
                 cash["rotation_speed"] = random.uniform(-180.0, 180.0)
                 cash["size_scale"] = random.uniform(0.7, 1.3)
     
-    def draw_main_menu(self, dt: float = 0.016) -> None:
+
+
+    def draw_main_menu(self, dt: float = 0.016, text_alpha: int = 255, show_flash: bool = False, flash_timer: float = 0.0, flash_duration: float = 0.3, cash_alpha: int | None = None) -> None:
         """
         Draw the main menu with pixelated title and play button (no borders).
         
         Args:
             dt: Delta time in seconds for animating falling cash
+            text_alpha: Alpha value for text (255 = fully visible, 0 = invisible)
+            show_flash: Whether to show flash effect
+            flash_timer: Current flash timer value
+            flash_duration: Total flash duration in seconds
         """
         screen_width = self.screen.get_width()
         screen_height = self.screen.get_height()
         
+        # If flash is active, ONLY draw the flash - nothing else
+        if show_flash and flash_timer < flash_duration * 2:
+            # Calculate flash intensity (starts bright, fades out over 2x duration)
+            progress = flash_timer / (flash_duration * 2)  # Use 2x duration for smoother fade
+            # Fade from 255 to 0 over the duration (ease out curve)
+            fade_progress = 1.0 - (progress * progress)  # Quadratic ease out
+            flash_alpha = int(255 * fade_progress)
+            
+            # Fill screen with white flash
+            flash_surface = pygame.Surface((screen_width, screen_height))
+            flash_surface.fill((255, 255, 255))
+            flash_surface.set_alpha(flash_alpha)
+            self.screen.fill(COLOR_BG)  # Fill background first
+            self.screen.blit(flash_surface, (0, 0))
+            return  # Exit early - don't draw menu elements
+        
+        # Normal menu rendering (when not flashing)
         # Initialize falling cash if empty (in case screen wasn't ready during __init__)
         if not self.falling_cash:
             self._initialize_falling_cash()
@@ -1489,6 +2004,7 @@ class Renderer:
         # Draw falling cash in background (as 3D coins)
         from config import COLOR_CASH, TILE_SIZE
         base_radius = TILE_SIZE // 4  # Base radius for coin (2x bigger)
+        coin_alpha = text_alpha if cash_alpha is None else cash_alpha
         
         for cash in self.falling_cash:
             # Calculate coin size based on scale
@@ -1512,6 +2028,7 @@ class Renderer:
                 # Create a surface for the coin to rotate it
                 coin_surface_size = int(coin_radius * 2 * 1.5)  # Extra space for rotation
                 coin_surface = pygame.Surface((coin_surface_size, coin_surface_size), pygame.SRCALPHA)
+                coin_surface.set_alpha(coin_alpha)
                 
                 # Draw coin base (circle/ellipse) with 3D shading
                 coin_center = (coin_surface_size // 2, coin_surface_size // 2)
@@ -1546,13 +2063,14 @@ class Renderer:
                 # Draw rotated coin
                 self.screen.blit(rotated_coin, rotated_rect)
         
-        # Draw pixelated title
+        # Draw pixelated title with alpha
         title_text = "Tax Evasion Simulator"
         
         # Create a small font and render at small size for pixelation
         # Use monospace font for better pixelated look
         # Base size is 40px, will be scaled 4x to 160px total
         small_font = pygame.font.SysFont("monospace", 40)
+        # Create text surface with alpha
         small_surface = small_font.render(title_text, True, COLOR_TEXT)
         
         # Scale up without smoothing for pixelated effect
@@ -1563,11 +2081,14 @@ class Renderer:
             (small_surface.get_width() * scale_factor, small_surface.get_height() * scale_factor)
         )
         
+        # Apply alpha to title
+        pixelated_title.set_alpha(text_alpha)
+        
         # Center title higher up on screen
         title_rect = pixelated_title.get_rect(center=(screen_width // 2, screen_height // 5))
         self.screen.blit(pixelated_title, title_rect)
         
-        # Draw play button (no borders, just text)
+        # Draw play button (no borders, just text) with alpha
         play_text = "Play"
         
         # Create a smaller font for the button (base 36px, scaled 3x to 108px)
@@ -1581,7 +2102,40 @@ class Renderer:
             (button_small_surface.get_width() * button_scale_factor, button_small_surface.get_height() * button_scale_factor)
         )
         
+        # Apply alpha to button
+        pixelated_button.set_alpha(text_alpha)
+        
         # Center play button below title
         button_rect = pixelated_button.get_rect(center=(screen_width // 2, screen_height // 2 + 100))
         self.screen.blit(pixelated_button, button_rect)
 
+
+    def draw_transition_effect(self, phase: str, timer: float, duration: float) -> None:
+        """
+        Draw transition overlay (fade/flash).
+        
+        Args:
+            phase: Current transition phase ("fade_out" or "flash")
+            timer: Current timer value
+            duration: Total duration of the phase
+        """
+        screen_width = self.screen.get_width()
+        screen_height = self.screen.get_height()
+        
+        overlay = pygame.Surface((screen_width, screen_height))
+        progress = min(1.0, timer / duration)
+        
+        if phase == "fade_out":
+            # Fade to black: alpha goes 0 -> 255
+            alpha = int(255 * progress)
+            overlay.fill((0, 0, 0))
+        elif phase == "flash":
+            # Flash white: alpha goes 255 -> 0 (fade in from white)
+            # Main menu flash: White screen fades OUT.
+            alpha = int(255 * (1.0 - progress))
+            overlay.fill((255, 255, 255))
+        else:
+            return
+
+        overlay.set_alpha(alpha)
+        self.screen.blit(overlay, (0, 0))

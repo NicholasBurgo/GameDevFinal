@@ -4,7 +4,7 @@ import random
 
 # Game settings
 FPS = 60
-DAY_DURATION = 45.0  # Duration of each day in seconds
+DAY_DURATION = 25.0  # Duration of each day in seconds
 
 # Base tile size, scaled up to make everything appear larger on screen.
 TILE_SIZE = 40 * 3  # 3x bigger than the original
@@ -18,7 +18,10 @@ TILE_COUNTER = "C"
 TILE_NODE = "N"  # Node that customers can buy from or walk to
 TILE_OFFICE_DOOR = "O"  # Office door - only player can pass through
 TILE_COMPUTER = "P"  # Computer tile in office
-TILE_ACTIVATION = "A"  # Activation tile (same color as floor, walkable)
+TILE_ACTIVATION = "A"  # Legacy activation tile
+TILE_ACTIVATION_1 = "1"  # Computer 1 activation
+TILE_ACTIVATION_2 = "2"  # Computer 2 activation
+TILE_ACTIVATION_3 = "3"  # Computer 3 activation
 
 # Colors
 COLOR_BG = (15, 15, 25)

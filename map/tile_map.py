@@ -12,6 +12,9 @@ from config import (
     COLOR_SHELF,
     COLOR_WALL,
     TILE_ACTIVATION,
+    TILE_ACTIVATION_1,
+    TILE_ACTIVATION_2,
+    TILE_ACTIVATION_3,
     TILE_COMPUTER,
     TILE_COUNTER,
     TILE_DOOR,
@@ -43,11 +46,12 @@ STORE_MAP = [
 # Office room map - smaller room for the player
 OFFICE_MAP = [
     "############",
+    "#P...P...P.#",
+    "#1...2...3.#",
     "#..........#",
     "#..........#",
-    "#...A......#",  # Activation tile (same color as floor)
-    "#...P......#",  # Computer tile
     "#..........#",
+    "#..........#",  
     "###O########",
 ]
 
@@ -145,10 +149,19 @@ class TileMap:
                     color = COLOR_FLOOR
                     pygame.draw.rect(surface, color, rect)
                 elif tile == TILE_COMPUTER:
-                    color = COLOR_COMPUTER
-                    pygame.draw.rect(surface, color, rect)
-                elif tile == TILE_ACTIVATION:
-                    # Activation tile is same color as floor (invisible)
+                    # Determine which computer to draw based on column
+                    comp_idx = -1
+                    if col == 1: comp_idx = 0
+                    elif col == 5: comp_idx = 1
+                    elif col == 9: comp_idx = 2
+                    
+                    if computer_images and 0 <= comp_idx < len(computer_images) and computer_images[comp_idx]:
+                        surface.blit(computer_images[comp_idx], rect)
+                    else:
+                        color = COLOR_COMPUTER
+                        pygame.draw.rect(surface, color, rect)
+                elif tile in [TILE_ACTIVATION, TILE_ACTIVATION_1, TILE_ACTIVATION_2, TILE_ACTIVATION_3]:
+                    # Activation tiles are same color as floor (invisible)
                     color = COLOR_FLOOR
                     pygame.draw.rect(surface, color, rect)
                 else:
