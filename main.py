@@ -282,6 +282,9 @@ def main() -> None:
             # Render boss fight screen with Pokemon-style flash effect
             fight_options = game_state.get_boss_fight_options() if game_state.boss_fight_menu_mode == "fight" else None
             root_options = game_state.get_boss_root_options() if game_state.boss_fight_menu_mode != "fight" else None
+            visible_options = None
+            if game_state.player_turn:
+                visible_options = fight_options if fight_options is not None else root_options
             renderer.draw_boss_fight_screen(
                 show_flash=game_state.boss_fight_show_flash,
                 flash_timer=game_state.boss_fight_flash_timer,
@@ -289,8 +292,11 @@ def main() -> None:
                 boss_health=game_state.boss_health,
                 player_health=game_state.player_health,
                 menu_selection=game_state.boss_fight_menu_selection,
-                fight_options=fight_options if fight_options is not None else root_options,
+                fight_options=visible_options,
                 fight_prompt=game_state.boss_fight_prompt_visible,
+                boss_hurt_timer=game_state.boss_hurt_flash_timer,
+                player_hurt_timer=game_state.player_hurt_flash_timer,
+                hurt_flash_duration=game_state.hurt_flash_duration,
             )
 
         pygame.display.flip()

@@ -1371,7 +1371,8 @@ class Renderer:
     
     def draw_boss_fight_screen(self, show_flash: bool = False, flash_timer: float = 0.0, flash_duration: float = 0.3, 
                                boss_health: float = 100.0, player_health: float = 100.0, menu_selection: int = 0,
-                               fight_options: list[dict] | None = None, fight_prompt: str = "") -> None:
+                               fight_options: list[dict] | None = None, fight_prompt: str = "",
+                               boss_hurt_timer: float = 0.0, player_hurt_timer: float = 0.0, hurt_flash_duration: float = 0.3) -> None:
         """
         Draw boss fight screen using BattleScene.png image with Pokemon-style flash effect.
         
@@ -1467,24 +1468,66 @@ class Renderer:
                 # Quicker, more noticeable vertical bob (~2s cycle, slightly larger)
                 self.player_boss_bob_phase = (self.player_boss_bob_phase + (1 / 60.0)) % 2.0
                 bob_offset = math.sin((self.player_boss_bob_phase / 2.0) * 2 * math.pi) * 6
-                pos_y = screen_height - new_size[1] - margin_y + bob_offset
+                # Hurt shake
+                shake_x = 0
+                shake_y = 0
+                if player_hurt_timer > 0 and hurt_flash_duration > 0:
+                    amp = 6 * max(0.0, min(1.0, player_hurt_timer / hurt_flash_duration))
+                    shake_x = random.uniform(-amp, amp)
+                    shake_y = random.uniform(-amp, amp)
+                pos_y = screen_height - new_size[1] - margin_y + bob_offset + shake_y
+                pos_x += shake_x
                 self.screen.blit(scaled_img, (pos_x, pos_y))
         
-        # Draw tax boss portrait at top right (after flash to avoid overlap)
-        if self.tax_boss_image is not None and (not show_flash or flash_timer >= flash_duration):
-            img_w, img_h = self.tax_boss_image.get_size()
-            max_w = int(screen_width * 0.20)
-            max_h = int(screen_height * 0.25)
-            scale = min(max_w / img_w, max_h / img_h)
-            scale = min(scale, 2.0)
-            new_size = (int(img_w * scale), int(img_h * scale))
-            scaled_img = pygame.transform.scale(self.tax_boss_image, new_size)
-            # Position inset further left/down
-            margin_x = 470
-            margin_y = 230
-            pos_x = screen_width - new_size[0] - margin_x
-            pos_y = margin_y
-            self.screen.blit(scaled_img, (pos_x, pos_y))
+        # Draw tax boss portrait at top right (slide in after flash, with bob)
+        if self.tax_boss_image is not None:
+            # Track flash state for slide trigger
+            if show_flash and flash_timer < flash_duration:
+                self.tax_boss_last_flash_active = True
+                self.tax_boss_slide_active = False
+                self.tax_boss_slide_start_ms = None
+            elif self.tax_boss_last_flash_active:
+                self.tax_boss_slide_active = True
+                self.tax_boss_slide_start_ms = pygame.time.get_ticks()
+                self.tax_boss_last_flash_active = False
+
+            # Skip drawing during flash
+            if not (show_flash and flash_timer < flash_duration):
+                img_w, img_h = self.tax_boss_image.get_size()
+                max_w = int(screen_width * 0.20)
+                max_h = int(screen_height * 0.25)
+                scale = min(max_w / img_w, max_h / img_h)
+                scale = min(scale, 2.0)
+                new_size = (int(img_w * scale), int(img_h * scale))
+                scaled_img = pygame.transform.scale(self.tax_boss_image, new_size)
+                # Target position (inset left/down)
+                margin_x = 470
+                margin_y = 230
+                pos_x = screen_width - new_size[0] - margin_x
+                pos_y_base = margin_y
+                # Slide from right edge
+                if self.tax_boss_slide_active and self.tax_boss_slide_start_ms is not None:
+                    elapsed = (pygame.time.get_ticks() - self.tax_boss_slide_start_ms) / 1000.0
+                    duration = max(0.05, self.tax_boss_slide_duration)
+                    t = max(0.0, min(1.0, elapsed / duration))
+                    start_x = screen_width + int(new_size[0] * 1.1)
+                    eased = 1 - (1 - t) * (1 - t)
+                    pos_x = start_x + (pos_x - start_x) * eased
+                    if t >= 1.0:
+                        self.tax_boss_slide_active = False
+                # Bobbing (match player cadence)
+                self.tax_boss_bob_phase = (self.tax_boss_bob_phase + (1 / 60.0)) % 2.0
+                bob_offset = math.sin((self.tax_boss_bob_phase / 2.0) * 2 * math.pi) * 6
+                # Hurt shake
+                shake_x = 0
+                shake_y = 0
+                if boss_hurt_timer > 0 and hurt_flash_duration > 0:
+                    amp = 6 * max(0.0, min(1.0, boss_hurt_timer / hurt_flash_duration))
+                    shake_x = random.uniform(-amp, amp)
+                    shake_y = random.uniform(-amp, amp)
+                pos_y = pos_y_base + bob_offset + shake_y
+                pos_x += shake_x
+                self.screen.blit(scaled_img, (pos_x, pos_y))
 
         # Boss intro transition: black -> expanding white circle -> white closing to center
         if show_flash and flash_timer < flash_duration:
@@ -1532,6 +1575,22 @@ class Renderer:
             text_rect = text_surface.get_rect(center=(screen_width // 2, screen_height // 2))
             self.screen.blit(text_surface, text_rect)
         
+        # Hurt flashes (boss: yellow, player: red)
+        if boss_hurt_timer > 0 and hurt_flash_duration > 0:
+            alpha = int(180 * (boss_hurt_timer / hurt_flash_duration))
+            alpha = max(0, min(255, alpha))
+            if alpha > 0:
+                overlay = pygame.Surface((screen_width, screen_height), pygame.SRCALPHA)
+                overlay.fill((255, 230, 120, alpha))
+                self.screen.blit(overlay, (0, 0))
+        if player_hurt_timer > 0 and hurt_flash_duration > 0:
+            alpha = int(180 * (player_hurt_timer / hurt_flash_duration))
+            alpha = max(0, min(255, alpha))
+            if alpha > 0:
+                overlay = pygame.Surface((screen_width, screen_height), pygame.SRCALPHA)
+                overlay.fill((255, 80, 80, alpha))
+                self.screen.blit(overlay, (0, 0))
+        
         # Draw health bars (only if not flashing, or after flash)
         if not show_flash or flash_timer >= flash_duration:
             # Boss health bar (top-left)
@@ -1549,19 +1608,22 @@ class Renderer:
                 align_right=True  # Player bar shrinks from right
             )
             
-            # Draw menu buttons (Fight, Bag, Pay)
             # ===== MENU BUTTON POSITIONS (EASY TO ADJUST) =====
             MENU_BUTTONS_X = 1600 # 400 pixels from right edge (moved left)
             MENU_BUTTONS_Y = 1100 # 400 pixels from bottom (moved up)
             BUTTON_SPACING = 80  # Space between buttons (closer together)
             # =================================================
-            self._draw_boss_fight_menu(MENU_BUTTONS_X, MENU_BUTTONS_Y, BUTTON_SPACING, menu_selection, fight_options or [])
+            # Draw menu buttons only if provided (hide when not player's turn)
+            if fight_options:
+                self._draw_boss_fight_menu(MENU_BUTTONS_X, MENU_BUTTONS_Y, BUTTON_SPACING, menu_selection, fight_options or [])
             
             # Draw prompt near menu (pixelated text only, no box)
             if fight_prompt:
                 prompt_font = pygame.font.SysFont("monospace", 40, bold=True)
-                prompt_surface = prompt_font.render(fight_prompt, True, (255, 255, 255))
-                self.screen.blit(prompt_surface, (MENU_BUTTONS_X - 1330, MENU_BUTTONS_Y + 10))
+                lines = fight_prompt.split("\n")
+                for i, line in enumerate(lines):
+                    prompt_surface = prompt_font.render(line, True, (255, 255, 255))
+                    self.screen.blit(prompt_surface, (MENU_BUTTONS_X - 1330, MENU_BUTTONS_Y + 10 + i * 46))
     
     def _get_health_bar_color(self, health: float) -> tuple:
         """

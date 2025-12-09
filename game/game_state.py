@@ -219,6 +219,15 @@ class GameState:
         # Boss fight health bars (0 to 100)
         self.boss_health = 100  # Tax boss health (0-100)
         self.player_health = 100  # Player health (0-100)
+        # Hurt flash timers (seconds)
+        self.boss_hurt_flash_timer = 0.0
+        self.player_hurt_flash_timer = 0.0
+        self.hurt_flash_duration = 0.3
+        # Turn / counter control
+        self.player_turn = True
+        self.boss_counter_pending = False
+        self.boss_counter_damage = 0
+        self.boss_counter_snark = ""
         
         # Boss fight menu buttons
         # Boss fight menu selection and mode ("root" or "fight" submenu)
@@ -330,6 +339,11 @@ class GameState:
         self._update_slot_spin(dt)
         self._update_mystery_spin(dt)
         self._update_boss_fight_prompt(dt)
+        # Decay hurt flashes
+        if self.boss_hurt_flash_timer > 0.0:
+            self.boss_hurt_flash_timer = max(0.0, self.boss_hurt_flash_timer - dt)
+        if self.player_hurt_flash_timer > 0.0:
+            self.player_hurt_flash_timer = max(0.0, self.player_hurt_flash_timer - dt)
         # Auto-advance boss prompt from intro to warning after a brief pause
         if self.game_state == "boss_fight" and self.boss_fight_prompt_stage == 0:
             self.boss_fight_prompt_autoadvance_timer += dt
@@ -846,6 +860,10 @@ class GameState:
                     self.boss_fight_flash_timer = 0.0
                     return False
             elif self.game_state == "boss_fight":
+                # Block inputs when not player's turn (unless resolving counter)
+                if not self.player_turn and not self.boss_counter_pending:
+                    if event.key in (pygame.K_w, pygame.K_UP, pygame.K_s, pygame.K_DOWN, pygame.K_RETURN, pygame.K_SPACE):
+                        return False
                 # Handle menu navigation in boss fight
                 if event.key == pygame.K_w or event.key == pygame.K_UP:
                     # Move selection up
@@ -879,6 +897,10 @@ class GameState:
                         self.boss_fight_menu_mode = "fight"
                         self.boss_fight_menu_selection = 0
                         return False
+                    # Execute move when in fight submenu
+                    if self.boss_fight_menu_mode == "fight" and self.player_turn:
+                        self._execute_boss_fight_action(self.boss_fight_menu_selection)
+                        return False
                 elif event.key == pygame.K_SPACE:
                     if self.boss_fight_menu_mode == "root":
                         if self.boss_fight_prompt_stage in (0, 1):
@@ -892,6 +914,23 @@ class GameState:
                         else:
                             # Already ready; no action
                             return False
+                    elif self.boss_counter_pending:
+                        # Resolve boss counterattack after prompt advance
+                        self.boss_counter_pending = False
+                        dmg = self.boss_counter_damage
+                        self._apply_player_damage(dmg)
+                        self.set_boss_fight_prompt(
+                            f"Tax Dude: {self.boss_counter_snark}\n"
+                            f"Crowbar attack! You take {dmg}.",
+                            speed=30.0,
+                        )
+                        self.player_turn = True
+                        return False
+                    elif self.boss_fight_menu_mode == "fight":
+                        if self.player_turn:
+                            self._execute_boss_fight_action(self.boss_fight_menu_selection)
+                        # If not player turn, ignore space so it only traverses prompts
+                        return False
                 elif event.key in (pygame.K_ESCAPE, pygame.K_e):
                     # If in fight submenu, go back to root; otherwise ignore (can't exit)
                     if self.boss_fight_menu_mode == "fight":
@@ -1128,6 +1167,8 @@ class GameState:
             self.boss_fight_prompt_stage = 0
             self.boss_fight_prompt_autoadvance_timer = 0.0
             self.set_boss_fight_prompt("Tax Dude appeared out the wild")
+            self.player_turn = True
+            self.boss_counter_pending = False
             # Keep in-shop music playing during approach
             if self.inshop_music_path:
                 try:
@@ -1243,10 +1284,10 @@ class GameState:
     def get_boss_fight_options(self) -> list[dict]:
         """Return boss fight option list with availability."""
         return [
-            {"label": "Logic", "enabled": True},
-            {"label": "Nuke", "enabled": self.mystery_inventory.get("nuke", False)},
-            {"label": "Water Gun", "enabled": self.mystery_inventory.get("water_gun", False)},
-            {"label": "Paper Plane", "enabled": self.mystery_inventory.get("paper_plane", False)},
+            {"label": "Logic", "enabled": True, "damage": 10},
+            {"label": "Nuke", "enabled": self.mystery_inventory.get("nuke", False), "damage": 50},
+            {"label": "Water Gun", "enabled": self.mystery_inventory.get("water_gun", False), "damage": 12},
+            {"label": "Paper Plane", "enabled": self.mystery_inventory.get("paper_plane", False), "damage": 18},
         ]
     
     def get_boss_root_options(self) -> list[dict]:
@@ -1256,6 +1297,49 @@ class GameState:
             {"label": "Bag", "enabled": False},
             {"label": "Pay", "enabled": False},
         ]
+
+    def _apply_boss_damage(self, amount: int) -> None:
+        """Apply damage to boss and trigger hurt flash."""
+        self.boss_health = max(0, self.boss_health - max(0, amount))
+        self.boss_hurt_flash_timer = self.hurt_flash_duration
+
+    def _apply_player_damage(self, amount: int) -> None:
+        """Apply damage to player and trigger hurt flash."""
+        self.player_health = max(0, self.player_health - max(0, amount))
+        self.player_hurt_flash_timer = self.hurt_flash_duration
+
+    def _execute_boss_fight_action(self, selection: int) -> None:
+        """Resolve a player-selected boss fight action."""
+        options = self.get_boss_fight_options()
+        if selection < 0 or selection >= len(options):
+            return
+        option = options[selection]
+        if not option.get("enabled", False):
+            self.set_boss_fight_prompt(f"{option.get('label', 'Move')} is unavailable.")
+            return
+        label = option.get("label", "Move")
+        damage = int(option.get("damage", 0))
+        import random
+        snark_pool = [
+            "That all you got?",
+            "You hit like a tax deduction.",
+            "Cute move. Pay up.",
+            "Try harder, wallet warrior.",
+        ]
+        snark = random.choice(snark_pool)
+        # Player attack
+        self._apply_boss_damage(damage)
+        self.set_boss_fight_prompt(
+            f"You used {label}! {damage} dmg.\n"
+            f"Tax Dude: {snark}",
+            speed=30.0,
+        )
+        # Schedule boss counterattack, await player input to continue
+        self.boss_counter_pending = True
+        self.boss_counter_damage = random.randint(6, 12)
+        self.boss_counter_snark = snark
+        self.player_turn = False
+        self.boss_fight_prompt_stage = 2
 
     def set_boss_fight_prompt(self, text: str, speed: float | None = None) -> None:
         """Set the boss fight prompt text and reset typing effect."""
