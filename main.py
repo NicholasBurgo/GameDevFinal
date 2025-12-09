@@ -181,6 +181,18 @@ def main() -> None:
                     circle_radius=game_state.boss_circle_radius,
                     camera_y_offset=game_state.camera_y_offset,
                 )
+                if game_state.boss_darkening:
+                    alpha = int(255 * min(1.0, game_state.boss_dark_timer / max(0.0001, game_state.boss_dark_duration)))
+                    overlay = pygame.Surface(renderer.screen.get_size(), pygame.SRCALPHA)
+                    overlay.fill((0, 0, 0, alpha))
+                    renderer.screen.blit(overlay, (0, 0))
+                    # Re-draw player and approaching circle on top
+                    game_state.player.draw(renderer.screen)
+                    renderer.draw_boss_approaching_circle(
+                        circle_position=game_state.boss_circle_position,
+                        circle_radius=game_state.boss_circle_radius,
+                        camera_y_offset=game_state.camera_y_offset,
+                    )
             
             # Draw pixelated time counter at top center
             renderer.draw_time_counter(game_state.current_day, game_state.day_timer)

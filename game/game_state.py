@@ -247,6 +247,9 @@ class GameState:
         self.boss_circle_reached = False  # Whether circle has reached player
         self.boss_circle_path: list[pygame.Vector2] | None = None  # A* path to player
         self.boss_circle_path_index = 0  # Current waypoint index in path
+        self.boss_darkening = False
+        self.boss_dark_timer = 0.0
+        self.boss_dark_duration = 1.5
         
         # Initialize AI dialogue system
         self.ai_dialogue = AIDialogue()
@@ -456,25 +459,13 @@ class GameState:
             if distance_to_player < TILE_SIZE * 0.5:  # Close enough to trigger
                 if not self.boss_circle_reached:
                     self.boss_circle_reached = True
-                    # Stop in-shop music and transition to boss fight with intro
+                    self.boss_darkening = True
+                    self.boss_dark_timer = 0.0
+                    # Stop in-shop music and play intro once
                     try:
                         pygame.mixer.music.stop()
                     except Exception:
                         pass
-                    if self.boss_intro_sound:
-                        try:
-                            self.boss_intro_sound.play()
-                        except Exception as e:
-                            print(f"Warning: Could not play boss intro: {e}")
-                    # Transition to boss fight with flash
-                    self.game_state = "boss_fight"
-                    self.boss_fight_show_flash = True
-                    self.boss_fight_flash_timer = 0.0
-                    self.boss_fight_menu_mode = "root"
-                    self.boss_fight_menu_selection = 0
-                    self.boss_fight_prompt_stage = 0
-                    self.boss_fight_prompt_autoadvance_timer = 0.0
-                    self.set_boss_fight_prompt("Tax Dude appeared out the wild")
             else:
                 # Follow A* path to player
                 # Recompute path if we don't have one or if player moved significantly
@@ -514,6 +505,12 @@ class GameState:
                         step = self.boss_circle_speed * dt * FPS
                         movement = direction * step
                         self.boss_circle_position += movement
+
+        # Handle boss darkening transition before fight
+        if self.game_state == "boss_approaching" and self.boss_darkening:
+            self.boss_dark_timer += dt
+            if self.boss_dark_timer >= self.boss_dark_duration:
+                self._enter_boss_fight()
         
         # Update boss fight flash timer
         if self.game_state == "boss_fight" and self.boss_fight_show_flash:
@@ -1302,11 +1299,88 @@ class GameState:
         """Apply damage to boss and trigger hurt flash."""
         self.boss_health = max(0, self.boss_health - max(0, amount))
         self.boss_hurt_flash_timer = self.hurt_flash_duration
+        if self.boss_health <= 0:
+            self._handle_boss_defeat()
 
     def _apply_player_damage(self, amount: int) -> None:
         """Apply damage to player and trigger hurt flash."""
         self.player_health = max(0, self.player_health - max(0, amount))
         self.player_hurt_flash_timer = self.hurt_flash_duration
+        if self.player_health <= 0:
+            self._handle_player_defeat()
+
+    def _handle_boss_defeat(self) -> None:
+        """Handle player victory over the boss."""
+        self.collected_coins += 100
+        self.set_boss_fight_prompt("You win! +100 cash.", speed=30.0)
+        self.player_turn = False
+        self.boss_counter_pending = False
+        # Stop boss/battle music
+        if self.tax_man_music_sound:
+            self.tax_man_music_sound.stop()
+        try:
+            pygame.mixer.music.stop()
+        except Exception:
+            pass
+        # Exit boss fight back to playing
+        self.game_state = "playing"
+
+    def _handle_player_defeat(self) -> None:
+        """Handle player defeat."""
+        due = max(1, self.tax_man_tax_amount * 2)
+        if self.collected_coins >= due:
+            self.collected_coins -= due
+            self.set_boss_fight_prompt(f"Paid double ({due}). You survive.", speed=30.0)
+            self.player_turn = False
+            self.boss_counter_pending = False
+            if self.tax_man_music_sound:
+                self.tax_man_music_sound.stop()
+            try:
+                pygame.mixer.music.stop()
+            except Exception:
+                pass
+            self.game_state = "playing"
+        else:
+            self.set_boss_fight_prompt("Out of cash. Game over.", speed=30.0)
+            self.player_turn = False
+            self.boss_counter_pending = False
+            if self.tax_man_music_sound:
+                self.tax_man_music_sound.stop()
+            try:
+                pygame.mixer.music.stop()
+            except Exception:
+                pass
+            self.game_state = "day_over"
+
+    def _enter_boss_fight(self) -> None:
+        """Transition into boss fight after darkening."""
+        self.boss_darkening = False
+        self.boss_dark_timer = 0.0
+        self.game_state = "boss_fight"
+        self.boss_fight_show_flash = True
+        self.boss_fight_flash_timer = 0.0
+        self.boss_fight_menu_mode = "root"
+        self.boss_fight_menu_selection = 0
+        self.boss_fight_prompt_stage = 0
+        self.boss_fight_prompt_autoadvance_timer = 0.0
+        self.set_boss_fight_prompt("Tax Dude appeared out the wild")
+        self.player_turn = True
+        self.boss_counter_pending = False
+        # Start boss intro/music once fight begins (darkening remains silent)
+        try:
+            pygame.mixer.music.stop()
+        except Exception:
+            pass
+        if self.boss_intro_sound:
+            try:
+                self.boss_intro_sound.play()
+            except Exception as e:
+                print(f"Warning: Could not play boss intro: {e}")
+        if self.tax_man_music_sound:
+            try:
+                self.tax_man_music_sound.play(-1)
+            except Exception as e:
+                print(f"Warning: Could not play boss music: {e}")
 
     def _execute_boss_fight_action(self, selection: int) -> None:
         """Resolve a player-selected boss fight action."""
@@ -1327,6 +1401,25 @@ class GameState:
             "Try harder, wallet warrior.",
         ]
         snark = random.choice(snark_pool)
+        # Special case: Nuke triggers cutscene and ends fight
+        if label.lower() == "nuke":
+            self.set_boss_fight_prompt(
+                "You used Nuke.\nEverything goes white...",
+                speed=24.0,
+            )
+            self.player_turn = False
+            self.boss_counter_pending = False
+            self.boss_health = 0
+            self.boss_fight_show_flash = True
+            self.boss_fight_flash_timer = 0.0
+            self.boss_fight_flash_duration = 3.0
+            if self.tax_man_music_sound:
+                self.tax_man_music_sound.stop()
+            pygame.mixer.music.stop()
+            # Transition to day over animation to lock progression
+            self.game_state = "day_over_animation"
+            return
+
         # Player attack
         self._apply_boss_damage(damage)
         self.set_boss_fight_prompt(
@@ -1418,12 +1511,12 @@ class GameState:
             self.mystery_message = f"Already have {item['name']}."
         else:
             self.mystery_inventory[key] = True
-            self.mystery_message = f"Got {item['name']} ({item['damage']} dmg)."
+            if key == "nuke":
+                self.mystery_message = "Got Nuke. Save it for the boss..."
+            else:
+                self.mystery_message = f"Got {item['name']} ({item['damage']} dmg)."
 
-        if key == "nuke":
-            # Trigger game over effect
-            self.mystery_nuke_triggered = True
-            self.mystery_message = "Nuke pulled! Game over."
+        # Nuke no longer blows up immediately; reserved for boss fight use
 
     def _roll_mystery_box(self) -> None:
         """Resolve a mystery box roll (Computer 2)."""

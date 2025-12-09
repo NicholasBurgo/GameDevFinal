@@ -8,7 +8,7 @@ import cv2
 import numpy as np
 import pygame
 
-from config import COLOR_BG, COLOR_DAY_OVER_BG, COLOR_DAY_OVER_TEXT, COLOR_TEXT, DAY_DURATION
+from config import COLOR_BG, COLOR_DAY_OVER_BG, COLOR_DAY_OVER_TEXT, COLOR_TEXT, DAY_DURATION, TILE_SIZE
 from entities import Cash, Customer, Litter, LitterCustomer, Player, ThiefCustomer
 from map import TileMap
 
@@ -183,6 +183,17 @@ class Renderer:
         except (pygame.error, FileNotFoundError):
             print(f"Warning: Could not load battle scene image: {battle_scene_path}")
             self.battle_scene_image = None
+        
+        # Load floor texture
+        self.floor_texture: pygame.Surface | None = None
+        try:
+            floor_path = "assets/imgs/Floor.png"
+            loaded_image = pygame.image.load(floor_path).convert_alpha()
+            # Scale to tile size
+            self.floor_texture = pygame.transform.scale(loaded_image, (TILE_SIZE, TILE_SIZE))
+        except Exception as e:
+            print(f"Warning: Could not load floor texture: {e}")
+            self.floor_texture = None
 
         # Load player portrait for boss fight (circular crop)
         self.player_boss_image: pygame.Surface | None = None
@@ -230,7 +241,6 @@ class Renderer:
         
         # Load computer images
         self.computer_images = []
-        from config import TILE_SIZE
         for i in range(1, 4):
             try:
                 img = pygame.image.load(f"assets/imgs/Computer{i}.png").convert_alpha()
@@ -343,7 +353,13 @@ class Renderer:
                         TILE_OFFICE_DOOR, TILE_SHELF, TILE_WALL
                     )
                     
-                    if tile == TILE_WALL:
+                    if tile == TILE_FLOOR or tile == TILE_NODE:
+                        if self.floor_texture is not None:
+                            self.screen.blit(self.floor_texture, rect)
+                        else:
+                            color = COLOR_FLOOR
+                            pygame.draw.rect(self.screen, color, rect)
+                    elif tile == TILE_WALL:
                         # Use blue stone texture if available, otherwise fall back to color
                         if self.wall_stone_texture is not None:
                             self.screen.blit(self.wall_stone_texture, rect)
@@ -370,9 +386,6 @@ class Renderer:
                         else:
                             color = COLOR_COUNTER
                             pygame.draw.rect(self.screen, color, rect)
-                    elif tile == TILE_NODE:
-                        color = COLOR_FLOOR
-                        pygame.draw.rect(self.screen, color, rect)
                     elif tile == TILE_COMPUTER:
                         # Determine which computer to draw based on column
                         comp_idx = -1
@@ -382,16 +395,24 @@ class Renderer:
                         
                         if 0 <= comp_idx < len(self.computer_images) and self.computer_images[comp_idx]:
                             self.screen.blit(self.computer_images[comp_idx], rect)
+                            # Slot-like light overlay (keeps PNG visible) with per-computer offset
+                            self._draw_computer_light(rect, comp_idx)
                         else:
                             color = COLOR_COMPUTER
                             pygame.draw.rect(self.screen, color, rect)
                     elif tile in [TILE_ACTIVATION, TILE_ACTIVATION_1, TILE_ACTIVATION_2, TILE_ACTIVATION_3]:
-                        # Activation tile is same color as floor (invisible)
-                        color = COLOR_FLOOR
-                        pygame.draw.rect(self.screen, color, rect)
+                        # Activation tile uses floor texture/color
+                        if self.floor_texture is not None:
+                            self.screen.blit(self.floor_texture, rect)
+                        else:
+                            color = COLOR_FLOOR
+                            pygame.draw.rect(self.screen, color, rect)
                     else:
-                        color = COLOR_FLOOR
-                        pygame.draw.rect(self.screen, color, rect)
+                        if self.floor_texture is not None:
+                            self.screen.blit(self.floor_texture, rect)
+                        else:
+                            color = COLOR_FLOOR
+                            pygame.draw.rect(self.screen, color, rect)
         
         # Draw entities with camera offset
         for coin in cash_items:
@@ -1971,6 +1992,28 @@ class Renderer:
             base_color = selected_color if is_selected else (text_color if enabled else disabled_color)
             text_surface = bold_font.render(label, True, base_color)
             self.screen.blit(text_surface, (x, button_y))
+
+    def _draw_computer_light(self, rect: pygame.Rect, idx: int = 0) -> None:
+        """Draw a color-cycling outline over a computer tile, keeping PNG visible."""
+        colors = [
+            (255, 80, 80),
+            (255, 200, 80),
+            (120, 255, 120),
+            (80, 220, 255),
+            (180, 120, 255),
+            (255, 120, 200),
+        ]
+        # Add per-computer phase offset to desync lights
+        t = (pygame.time.get_ticks() + idx * 413) / 300.0
+        idx = int(t) % len(colors)
+        next_idx = (idx + 1) % len(colors)
+        frac = t - int(t)
+        c1 = colors[idx]
+        c2 = colors[next_idx]
+        blend = tuple(int(c1[i] * (1 - frac) + c2[i] * frac) for i in range(3))
+        surface = pygame.Surface((rect.width, rect.height), pygame.SRCALPHA)
+        pygame.draw.rect(surface, (*blend, 140), surface.get_rect(), width=6, border_radius=8)
+        self.screen.blit(surface, rect.topleft)
     
     def _initialize_falling_cash(self) -> None:
         """Initialize falling cash items for main menu background."""
