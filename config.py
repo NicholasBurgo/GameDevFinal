@@ -40,6 +40,8 @@ COLOR_PLAYER = (230, 230, 80)
 COLOR_TEXT = (230, 230, 230)
 COLOR_DAY_OVER_BG = (0, 0, 0)  # Black background for day over screen
 COLOR_DAY_OVER_TEXT = (255, 255, 255)  # White text for day over screen
+# Overlay opacity for subtly darkening floor tiles
+FLOOR_OVERLAY_ALPHA = 60  # 0-255
 
 # Player settings
 PLAYER_RADIUS = 14 * 3

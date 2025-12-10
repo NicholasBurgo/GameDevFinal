@@ -8,7 +8,15 @@ import cv2
 import numpy as np
 import pygame
 
-from config import COLOR_BG, COLOR_DAY_OVER_BG, COLOR_DAY_OVER_TEXT, COLOR_TEXT, DAY_DURATION, TILE_SIZE
+from config import (
+    COLOR_BG,
+    COLOR_DAY_OVER_BG,
+    COLOR_DAY_OVER_TEXT,
+    COLOR_TEXT,
+    DAY_DURATION,
+    FLOOR_OVERLAY_ALPHA,
+    TILE_SIZE,
+)
 from entities import Cash, Customer, Litter, LitterCustomer, Player, ThiefCustomer
 from map import TileMap
 
@@ -187,6 +195,9 @@ class Renderer:
         # Load floor textures (store and office)
         self.floor_texture_store: pygame.Surface | None = self._load_floor_texture("assets/imgs/Floor.png")
         self.floor_texture_office: pygame.Surface | None = self._load_floor_texture("assets/imgs/Floor2.png")
+        # Reusable translucent overlay to darken floor tiles without new surfaces each frame
+        self.floor_overlay_surface = pygame.Surface((TILE_SIZE, TILE_SIZE), pygame.SRCALPHA)
+        self.floor_overlay_surface.fill((0, 0, 0, FLOOR_OVERLAY_ALPHA))
 
         # Load player portrait for boss fight (circular crop)
         self.player_boss_image: pygame.Surface | None = None
@@ -383,6 +394,9 @@ class Renderer:
                         else:
                             color = COLOR_FLOOR
                             pygame.draw.rect(self.screen, color, rect)
+                        # Darken floors with a reusable translucent overlay
+                        if self.floor_overlay_surface is not None:
+                            self.screen.blit(self.floor_overlay_surface, rect)
                     elif tile == TILE_WALL:
                         # Use blue stone texture if available, otherwise fall back to color
                         if self.wall_stone_texture is not None:
@@ -439,6 +453,8 @@ class Renderer:
                         else:
                             color = COLOR_FLOOR
                             pygame.draw.rect(self.screen, color, rect)
+                        if self.floor_overlay_surface is not None:
+                            self.screen.blit(self.floor_overlay_surface, rect)
                     else:
                         tile_floor_texture = self._get_floor_texture_for_tile(active_map, row, col)
                         if tile_floor_texture is not None:

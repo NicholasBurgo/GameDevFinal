@@ -35,10 +35,20 @@ def main() -> None:
     office_width = game_state.office_map.cols * TILE_SIZE
     office_height = game_state.office_map.rows * TILE_SIZE
     
-    screen_width = max(store_width, office_width)
-    screen_height = max(store_height, office_height)
+    logical_width = max(store_width, office_width)
+    logical_height = max(store_height, office_height)
     
-    screen = pygame.display.set_mode((screen_width, screen_height))
+    # Clamp the actual window to the current monitor so it never exceeds it.
+    # We keep a separate logical surface at full size and scale it down each frame.
+    info = pygame.display.Info()
+    window_width = min(logical_width, info.current_w)
+    window_height = min(logical_height, info.current_h)
+    
+    window_flags = pygame.RESIZABLE
+    window = pygame.display.set_mode((window_width, window_height), window_flags)
+    
+    # Logical render surface (full game resolution); scaled to the window each frame.
+    screen = pygame.Surface((logical_width, logical_height)).convert_alpha()
     clock = pygame.time.Clock()
 
     # Load day over sound
@@ -369,6 +379,10 @@ def main() -> None:
                 bg_color=(90, 90, 90),
                 text_color=(255, 255, 255),
             )
+        # Scale the full-resolution frame down to the actual window size so the
+        # game always fits on the current monitor.
+        scaled_frame = pygame.transform.smoothscale(screen, window.get_size())
+        window.blit(scaled_frame, (0, 0))
         pygame.display.flip()
 
     pygame.quit()
