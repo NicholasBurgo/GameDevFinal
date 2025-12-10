@@ -24,7 +24,7 @@ def main() -> None:
         print("Warning: Could not initialize audio mixer")
     
     # Create tile map (initial - GameState will create both maps)
-    tile_map = TileMap()
+    tile_map = TileMap(name="store")
     
     # Initialize game systems first to get both maps
     game_state = GameState(tile_map)
@@ -265,11 +265,62 @@ def main() -> None:
                 message=game_state.slot_message,
                 computer_image=computer_img,
             )
+        elif game_state.game_state == "nuke_game_over":
+            # White-out that ramps up, then types the message
+            fade_dur = getattr(game_state, "nuke_game_over_fade_duration", 1.0) or 1.0
+            fade_t = getattr(game_state, "nuke_game_over_fade_timer", 0.0)
+            progress = min(1.0, max(0.0, fade_t / max(0.0001, fade_dur)))
+            # Start from black and lerp to white with alpha overlay
+            renderer.screen.fill((0, 0, 0))
+            overlay = pygame.Surface(renderer.screen.get_size())
+            alpha = int(255 * progress)
+            overlay.set_alpha(alpha)
+            overlay.fill((255, 255, 255))
+            renderer.screen.blit(overlay, (0, 0))
+            # Draw text only after it starts typing
+            nuke_text = getattr(game_state, "nuke_game_over_visible", "") or ""
+            if nuke_text:
+                # Draw text only (no banner) centered on screen
+                screen_w, screen_h = renderer.screen.get_size()
+                font = pygame.font.SysFont("monospace", 64, bold=True)
+                lines = nuke_text.split("\n")
+                rendered = [font.render(line, True, (0, 0, 0)) for line in lines]
+                total_h = sum(s.get_height() for s in rendered) + (len(rendered) - 1) * 8
+                y = (screen_h - total_h) // 2
+                for surf in rendered:
+                    rect = surf.get_rect(center=(screen_w // 2, y + surf.get_height() // 2))
+                    renderer.screen.blit(surf, rect)
+                    y += surf.get_height() + 8
         elif game_state.game_state == "day_over_animation":
-            # Render animated day over screen with video
-            video_playing = renderer.draw_day_over_screen(game_state.current_day, video_playing=game_state.video_playing, dt=dt)
-            # Update game state to track if video finished
-            game_state.video_playing = video_playing
+            # Fade to black, then play day-over animation
+            if not game_state.video_playing:
+                renderer.clear()
+                active_map = game_state.store_map if game_state.current_room == "store" else game_state.office_map
+                room_world_y_offset = 0.0 if game_state.current_room == "store" else game_state.office_world_y_offset
+                renderer.draw_room_with_camera(
+                    active_map=active_map,
+                    camera_y_offset=game_state.camera_y_offset,
+                    player=game_state.player,
+                    customers=game_state.customers if game_state.current_room == "store" else [],
+                    cash_items=game_state.cash_items if game_state.current_room == "store" else [],
+                    litter_items=game_state.litter_items if game_state.current_room == "store" else [],
+                    room_world_y_offset=room_world_y_offset,
+                )
+                # Fade overlay
+                progress = min(1.0, game_state.day_over_fade_timer / max(0.0001, game_state.day_over_fade_duration))
+                alpha = int(255 * progress)
+                overlay = pygame.Surface(renderer.screen.get_size(), pygame.SRCALPHA)
+                overlay.fill((0, 0, 0, alpha))
+                renderer.screen.blit(overlay, (0, 0))
+            else:
+                # Render animated day over screen with video
+                prev_playing = game_state.video_playing
+                video_playing = renderer.draw_day_over_screen(game_state.current_day, video_playing=game_state.video_playing, dt=dt)
+                # Update game state to track if video finished
+                game_state.video_playing = video_playing
+                if prev_playing and not video_playing:
+                    # Mark done so it won't restart
+                    game_state.day_over_video_done = True
         elif game_state.game_state == "day_over":
             # Legacy day over screen (for backwards compatibility)
             renderer.draw_day_over_screen(game_state.current_day, video_playing=False, dt=dt)
@@ -309,8 +360,15 @@ def main() -> None:
                 boss_hurt_timer=game_state.boss_hurt_flash_timer,
                 player_hurt_timer=game_state.player_hurt_flash_timer,
                 hurt_flash_duration=game_state.hurt_flash_duration,
+                boss_exit_progress=getattr(game_state, "boss_exit_progress", 0.0),
             )
-
+        # Overlay victory banner if active (e.g., after beating the boss)
+        if getattr(game_state, "boss_victory_banner_timer", 0.0) > 0.0:
+            renderer.draw_center_banner(
+                getattr(game_state, "boss_victory_banner_text", "") or "You win this time",
+                bg_color=(90, 90, 90),
+                text_color=(255, 255, 255),
+            )
         pygame.display.flip()
 
     pygame.quit()

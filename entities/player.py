@@ -70,7 +70,11 @@ class Player:
                 player_rect = self.rect
 
     def draw(self, surface: pygame.Surface) -> None:
-        pygame.draw.circle(surface, self.color, (int(self.x), int(self.y)), self.radius)
+        # Draw a simple black outline to make the player stand out
+        center = (int(self.x), int(self.y))
+        outline_radius = self.radius + 5
+        pygame.draw.circle(surface, (0, 0, 0), center, outline_radius)
+        pygame.draw.circle(surface, self.color, center, self.radius)
 
 
 

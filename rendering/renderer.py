@@ -184,16 +184,9 @@ class Renderer:
             print(f"Warning: Could not load battle scene image: {battle_scene_path}")
             self.battle_scene_image = None
         
-        # Load floor texture
-        self.floor_texture: pygame.Surface | None = None
-        try:
-            floor_path = "assets/imgs/Floor.png"
-            loaded_image = pygame.image.load(floor_path).convert_alpha()
-            # Scale to tile size
-            self.floor_texture = pygame.transform.scale(loaded_image, (TILE_SIZE, TILE_SIZE))
-        except Exception as e:
-            print(f"Warning: Could not load floor texture: {e}")
-            self.floor_texture = None
+        # Load floor textures (store and office)
+        self.floor_texture_store: pygame.Surface | None = self._load_floor_texture("assets/imgs/Floor.png")
+        self.floor_texture_office: pygame.Surface | None = self._load_floor_texture("assets/imgs/Floor2.png")
 
         # Load player portrait for boss fight (circular crop)
         self.player_boss_image: pygame.Surface | None = None
@@ -213,12 +206,12 @@ class Renderer:
             print(f"Warning: Could not load tax boss image: {e}")
             self.tax_boss_image = None
         
-        # Load wall texture
+        # Load wall texture (falls back to generated blue wall if missing)
         self.wall_texture: pygame.Surface | None = None
         try:
-            wall_texture_path = "assets/imgs/Wall1.png"
-            loaded_image = pygame.image.load(wall_texture_path)
-            self.wall_texture = loaded_image
+            wall_texture_path = "assets/imgs/Wall.png"
+            loaded_image = pygame.image.load(wall_texture_path).convert_alpha()
+            self.wall_texture = pygame.transform.scale(loaded_image, (TILE_SIZE, TILE_SIZE))
         except (pygame.error, FileNotFoundError):
             print(f"Warning: Could not load wall texture: {wall_texture_path}")
             self.wall_texture = None
@@ -226,8 +219,8 @@ class Renderer:
         # Generate shelf texture
         self.shelf_texture = self._generate_shelf_texture()
         
-        # Generate blue stone wall texture
-        self.wall_stone_texture = self._generate_stone_wall_texture()
+        # Use image wall texture if available, otherwise generated solid wall
+        self.wall_stone_texture = self.wall_texture or self._generate_stone_wall_texture()
         
         # Generate door textures
         self.door_texture = self._generate_door_texture()
@@ -285,6 +278,36 @@ class Renderer:
 
         # Store rects for tax man side buttons
         self.tax_side_buttons = {}
+
+    def _get_floor_texture_for_map(self, tile_map: TileMap | None) -> pygame.Surface | None:
+        """Return the floor texture appropriate for the given map."""
+        name = getattr(tile_map, "name", "")
+        if name == "office" and self.floor_texture_office is not None:
+            return self.floor_texture_office
+        if name == "store" and self.floor_texture_store is not None:
+            return self.floor_texture_store
+        return self.floor_texture_store or self.floor_texture_office
+
+    def _get_floor_texture_for_tile(self, tile_map: TileMap | None, row: int, col: int) -> pygame.Surface | None:
+        """
+        Return a floor texture for a specific tile.
+        Store uses a checkerboard of Floor and Floor2 when both are available.
+        """
+        name = getattr(tile_map, "name", "")
+        if name == "store" and self.floor_texture_store and self.floor_texture_office:
+            # Checkerboard based on tile parity
+            return self.floor_texture_store if (row + col) % 2 == 0 else self.floor_texture_office
+        # Fallback to map-level selection
+        return self._get_floor_texture_for_map(tile_map)
+
+    def _load_floor_texture(self, path: str) -> pygame.Surface | None:
+        """Load and scale a floor texture; return None on failure."""
+        try:
+            loaded_image = pygame.image.load(path).convert_alpha()
+            return pygame.transform.scale(loaded_image, (TILE_SIZE, TILE_SIZE))
+        except Exception as e:
+            print(f"Warning: Could not load floor texture {path}: {e}")
+            return None
 
     def clear(self) -> None:
         """Clear the screen with background color."""
@@ -354,8 +377,9 @@ class Renderer:
                     )
                     
                     if tile == TILE_FLOOR or tile == TILE_NODE:
-                        if self.floor_texture is not None:
-                            self.screen.blit(self.floor_texture, rect)
+                        tile_floor_texture = self._get_floor_texture_for_tile(active_map, row, col)
+                        if tile_floor_texture is not None:
+                            self.screen.blit(tile_floor_texture, rect)
                         else:
                             color = COLOR_FLOOR
                             pygame.draw.rect(self.screen, color, rect)
@@ -373,12 +397,16 @@ class Renderer:
                         else:
                             color = COLOR_SHELF
                             pygame.draw.rect(self.screen, color, rect)
+                        # Add dark outline for visibility
+                        pygame.draw.rect(self.screen, (0, 0, 0), rect, 3)
                     elif tile == TILE_DOOR:
                         color = COLOR_DOOR
                         pygame.draw.rect(self.screen, color, rect)
+                        pygame.draw.rect(self.screen, (0, 0, 0), rect, 3)
                     elif tile == TILE_OFFICE_DOOR:
                         color = COLOR_OFFICE_DOOR
                         pygame.draw.rect(self.screen, color, rect)
+                        pygame.draw.rect(self.screen, (0, 0, 0), rect, 3)
                     elif tile == TILE_COUNTER:
                         # Use counter texture if available, otherwise fall back to color
                         if self.counter_texture is not None:
@@ -386,6 +414,8 @@ class Renderer:
                         else:
                             color = COLOR_COUNTER
                             pygame.draw.rect(self.screen, color, rect)
+                        # Add dark outline for visibility
+                        pygame.draw.rect(self.screen, (0, 0, 0), rect, 3)
                     elif tile == TILE_COMPUTER:
                         # Determine which computer to draw based on column
                         comp_idx = -1
@@ -400,16 +430,19 @@ class Renderer:
                         else:
                             color = COLOR_COMPUTER
                             pygame.draw.rect(self.screen, color, rect)
+                        pygame.draw.rect(self.screen, (0, 0, 0), rect, 3)
                     elif tile in [TILE_ACTIVATION, TILE_ACTIVATION_1, TILE_ACTIVATION_2, TILE_ACTIVATION_3]:
                         # Activation tile uses floor texture/color
-                        if self.floor_texture is not None:
-                            self.screen.blit(self.floor_texture, rect)
+                        tile_floor_texture = self._get_floor_texture_for_tile(active_map, row, col)
+                        if tile_floor_texture is not None:
+                            self.screen.blit(tile_floor_texture, rect)
                         else:
                             color = COLOR_FLOOR
                             pygame.draw.rect(self.screen, color, rect)
                     else:
-                        if self.floor_texture is not None:
-                            self.screen.blit(self.floor_texture, rect)
+                        tile_floor_texture = self._get_floor_texture_for_tile(active_map, row, col)
+                        if tile_floor_texture is not None:
+                            self.screen.blit(tile_floor_texture, rect)
                         else:
                             color = COLOR_FLOOR
                             pygame.draw.rect(self.screen, color, rect)
@@ -427,6 +460,9 @@ class Renderer:
                     size,
                     size,
                 )
+                # Outline first, then fill
+                outline_rect = coin_rect.inflate(6, 6)
+                pygame.draw.rect(self.screen, (0, 0, 0), outline_rect, 2)
                 pygame.draw.rect(self.screen, COLOR_CASH, coin_rect)
         
         for litter in litter_items:
@@ -435,8 +471,9 @@ class Renderer:
             if -TILE_SIZE // 4 <= litter_screen_y < screen_height + TILE_SIZE // 4:
                 from config import COLOR_LITTER
                 size = TILE_SIZE // 4
-                pygame.draw.circle(self.screen, COLOR_LITTER,
-                                 (int(litter.pos.x), int(litter_screen_y)), size)
+                center = (int(litter.pos.x), int(litter_screen_y))
+                pygame.draw.circle(self.screen, (0, 0, 0), center, size + 3)
+                pygame.draw.circle(self.screen, COLOR_LITTER, center, size)
         
         for customer in customers:
             customer_screen_y = customer.position.y - int(camera_y_offset)
@@ -448,14 +485,16 @@ class Renderer:
                 if hasattr(customer, 'show_health_bar') and customer.show_health_bar:
                     self.draw_customer_health_bar(customer, pygame.Vector2(customer.position.x, customer_screen_y))
         
-        # Draw player with camera offset
+        # Draw player with camera offset (include black outline for visibility)
         player_screen_y = player.y - int(camera_y_offset)
         screen_height = self.screen.get_height()
         from config import PLAYER_RADIUS
         if -PLAYER_RADIUS <= player_screen_y < screen_height + PLAYER_RADIUS:
             from config import COLOR_PLAYER
-            pygame.draw.circle(self.screen, COLOR_PLAYER,
-                             (int(player.x), int(player_screen_y)), PLAYER_RADIUS)
+            center = (int(player.x), int(player_screen_y))
+            outline_radius = PLAYER_RADIUS + 5
+            pygame.draw.circle(self.screen, (0, 0, 0), center, outline_radius)
+            pygame.draw.circle(self.screen, COLOR_PLAYER, center, PLAYER_RADIUS)
     
     def draw_boss_approaching_circle(
         self,
@@ -720,6 +759,8 @@ class Renderer:
         screen_rect = pygame.Rect(screen_x, screen_y, screen_w, screen_h)
         screen_bg_color = (221, 224, 233)  # Color #dde0e9 for phone screen
         pygame.draw.rect(self.screen, screen_bg_color, screen_rect, border_radius=20)
+        # Add a black outline around the phone screen for clarity
+        pygame.draw.rect(self.screen, (0, 0, 0), screen_rect, width=4, border_radius=20)
         
         return screen_rect, screen_x, screen_y
 
@@ -769,6 +810,28 @@ class Renderer:
         
         # Fill with black background
         self.screen.fill(COLOR_DAY_OVER_BG)
+        # Checkerboard backdrop behind phone UI using floor textures.
+        # Show ~4 tiles total (2x2), scaled to fit the width.
+        screen_w, screen_h = self.screen.get_size()
+        cols = 2
+        rows = 2
+        tile = max(1, screen_w // cols)
+        tex_a = self.floor_texture_store
+        tex_b = self.floor_texture_office or self.floor_texture_store
+        fallback_a = (30, 30, 40)
+        fallback_b = (45, 45, 60)
+        for row in range(rows):
+            for col in range(cols):
+                x = col * tile
+                y = row * tile
+                use_a = ((col + row) % 2 == 0)
+                tex = tex_a if use_a else tex_b
+                if tex is not None:
+                    scaled = pygame.transform.scale(tex, (tile, tile))
+                    self.screen.blit(scaled, (x, y))
+                else:
+                    color = fallback_a if use_a else fallback_b
+                    pygame.draw.rect(self.screen, color, (x, y, tile, tile))
         
         screen_width = self.screen.get_width()
         screen_height = self.screen.get_height()
@@ -1042,8 +1105,8 @@ class Renderer:
         spacing = 40
         
         # Pixelated text setup
-        base_font_size = 24
-        scale_factor = 2
+        base_font_size = 28  # larger base size
+        scale_factor = 3     # stronger pixel upscale
         font = pygame.font.SysFont("monospace", base_font_size)
         
         self.tax_side_buttons = {}
@@ -1061,14 +1124,22 @@ class Renderer:
             
             # Draw pixelated text
             text_surface = font.render(display_label, True, color)
-            # Scale up
+            outline_surface = font.render(display_label, True, (0, 0, 0))
+            # Scale up (pixelated)
             scaled_surface = pygame.transform.scale(
                 text_surface, 
                 (text_surface.get_width() * scale_factor, text_surface.get_height() * scale_factor)
             )
+            scaled_outline = pygame.transform.scale(
+                outline_surface,
+                (outline_surface.get_width() * scale_factor, outline_surface.get_height() * scale_factor)
+            )
             
             # Position
             rect = scaled_surface.get_rect(topleft=(start_x, y))
+            # Outline passes
+            for dx, dy in ((-2, 0), (2, 0), (0, -2), (0, 2)):
+                self.screen.blit(scaled_outline, rect.move(dx, dy))
             self.screen.blit(scaled_surface, rect)
             
             # Store rect for mouse click support (optional but good to keep)
@@ -1149,9 +1220,17 @@ class Renderer:
             small_surface,
             (small_surface.get_width() * scale_factor, small_surface.get_height() * scale_factor)
         )
+        # Outline version (rendered in black, scaled to match)
+        outline_surface = pygame.transform.scale(
+            small_font.render(time_str, True, (0, 0, 0)),
+            (small_surface.get_width() * scale_factor, small_surface.get_height() * scale_factor)
+        )
         
         # Center at top of screen
         text_rect = pixelated_surface.get_rect(center=(self.screen.get_width() // 2, 60))
+        # Draw a simple outline by blitting offsets
+        for dx, dy in ((-2, 0), (2, 0), (0, -2), (0, 2)):
+            self.screen.blit(outline_surface, text_rect.move(dx, dy))
         self.screen.blit(pixelated_surface, text_rect)
 
     def draw_coins_counter(self, coins: int) -> None:
@@ -1177,10 +1256,17 @@ class Renderer:
             small_surface,
             (small_surface.get_width() * scale_factor, small_surface.get_height() * scale_factor)
         )
+        # Outline version (rendered in black, scaled to match)
+        outline_surface = pygame.transform.scale(
+            small_font.render(coins_str, True, (0, 0, 0)),
+            (small_surface.get_width() * scale_factor, small_surface.get_height() * scale_factor)
+        )
         
         # Position at top right of screen, same vertical level as time counter (y=50)
         text_rect = pixelated_surface.get_rect()
         text_rect.topright = (self.screen.get_width() - 30, 10)
+        for dx, dy in ((-2, 0), (2, 0), (0, -2), (0, 2)):
+            self.screen.blit(outline_surface, text_rect.move(dx, dy))
         self.screen.blit(pixelated_surface, text_rect)
 
     def draw_mystery_box_screen(
@@ -1393,7 +1479,8 @@ class Renderer:
     def draw_boss_fight_screen(self, show_flash: bool = False, flash_timer: float = 0.0, flash_duration: float = 0.3, 
                                boss_health: float = 100.0, player_health: float = 100.0, menu_selection: int = 0,
                                fight_options: list[dict] | None = None, fight_prompt: str = "",
-                               boss_hurt_timer: float = 0.0, player_hurt_timer: float = 0.0, hurt_flash_duration: float = 0.3) -> None:
+                               boss_hurt_timer: float = 0.0, player_hurt_timer: float = 0.0, hurt_flash_duration: float = 0.3,
+                               boss_exit_progress: float = 0.0) -> None:
         """
         Draw boss fight screen using BattleScene.png image with Pokemon-style flash effect.
         
@@ -1526,6 +1613,10 @@ class Renderer:
                 margin_y = 230
                 pos_x = screen_width - new_size[0] - margin_x
                 pos_y_base = margin_y
+                # Slide boss portrait left when exiting
+                if boss_exit_progress > 0.0:
+                    slide_distance = new_size[0] + screen_width * 0.25
+                    pos_x += slide_distance * min(1.0, boss_exit_progress)
                 # Slide from right edge
                 if self.tax_boss_slide_active and self.tax_boss_slide_start_ms is not None:
                     elapsed = (pygame.time.get_ticks() - self.tax_boss_slide_start_ms) / 1000.0
@@ -1646,6 +1737,34 @@ class Renderer:
                     prompt_surface = prompt_font.render(line, True, (255, 255, 255))
                     self.screen.blit(prompt_surface, (MENU_BUTTONS_X - 1330, MENU_BUTTONS_Y + 10 + i * 46))
     
+    def draw_center_banner(self, text: str, bg_color: tuple = (90, 90, 90), text_color: tuple = (255, 255, 255)) -> None:
+        """Draw a centered banner with a solid background behind the text."""
+        if not text:
+            return
+        screen_w, screen_h = self.screen.get_size()
+        font = pygame.font.SysFont("monospace", 64, bold=True)
+        lines = text.split("\n")
+        rendered = [font.render(line, True, text_color) for line in lines]
+        max_w = max(s.get_width() for s in rendered)
+        total_h = sum(s.get_height() for s in rendered) + (len(rendered) - 1) * 8
+        padding_x = 40
+        padding_y = 20
+        box_w = max_w + padding_x * 2
+        box_h = total_h + padding_y * 2
+        box_rect = pygame.Rect(0, 0, box_w, box_h)
+        box_rect.center = (screen_w // 2, screen_h // 2)
+        # Draw semi-opaque grey box
+        overlay = pygame.Surface((box_w, box_h), pygame.SRCALPHA)
+        pygame.draw.rect(overlay, (*bg_color, 220), overlay.get_rect(), border_radius=12)
+        pygame.draw.rect(overlay, (30, 30, 30), overlay.get_rect(), width=3, border_radius=12)
+        # Blit text centered inside box
+        y = padding_y
+        for surf in rendered:
+            text_rect = surf.get_rect(center=(box_w // 2, y + surf.get_height() // 2))
+            overlay.blit(surf, text_rect)
+            y += surf.get_height() + 8
+        self.screen.blit(overlay, box_rect.topleft)
+
     def _get_health_bar_color(self, health: float) -> tuple:
         """
         Get health bar color based on health value.
@@ -1993,7 +2112,7 @@ class Renderer:
             text_surface = bold_font.render(label, True, base_color)
             self.screen.blit(text_surface, (x, button_y))
 
-    def _draw_computer_light(self, rect: pygame.Rect, idx: int = 0) -> None:
+    def _draw_computer_light(self, rect: pygame.Rect, idx: int = 0, *_, **__) -> None:
         """Draw a color-cycling outline over a computer tile, keeping PNG visible."""
         colors = [
             (255, 80, 80),
@@ -2004,7 +2123,8 @@ class Renderer:
             (255, 120, 200),
         ]
         # Add per-computer phase offset to desync lights
-        t = (pygame.time.get_ticks() + idx * 413) / 300.0
+        # Speed up the light cycle
+        t = (pygame.time.get_ticks() + idx * 413) / 180.0
         idx = int(t) % len(colors)
         next_idx = (idx + 1) % len(colors)
         frac = t - int(t)
