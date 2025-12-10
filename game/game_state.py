@@ -20,8 +20,8 @@ class GameState:
 
     def __init__(self, tile_map: TileMap) -> None:
         # Create both room maps
-        self.store_map = TileMap(STORE_MAP)
-        self.office_map = TileMap(OFFICE_MAP)
+        self.store_map = TileMap(STORE_MAP, name="store")
+        self.office_map = TileMap(OFFICE_MAP, name="office")
         self.tile_map = tile_map  # Current active map (starts as store)
         
         # Room system
@@ -124,15 +124,18 @@ class GameState:
         self.mystery_spin_tick: float = 0.1
         self.mystery_pending_item: dict | None = None
 
-        # Game state: "main_menu", "playing", "waiting_for_customers", "collection_time", "day_over_animation", "day_over", "tax_man_notification", "tax_man", "boss_approaching", "boss_fight", "slot_machine", "mystery_box", "rain_bet"
+        # Game state: "main_menu", "playing", "waiting_for_customers", "collection_time", "day_over_animation", "day_over", "tax_man_notification", "tax_man", "boss_approaching", "boss_fight", "slot_machine", "mystery_box", "rain_bet", "nuke_game_over"
         self.game_state = "main_menu"
         
         # Day over sequence timers
         self.collection_timer = 0.0
         self.day_over_animation_progress = 0.0
         self.day_over_animation_duration = 1.0  # 1 second animation
+        self.day_over_fade_timer = 0.0
+        self.day_over_fade_duration = 1.0  # fade-to-black before day over video
         self.sound_played = False  # Track if day over sound has been played
         self.video_playing = False  # Track if video is currently playing
+        self.day_over_video_done = False  # Track if video finished to avoid replay
         
         # Tax man notification - appears around 1 PM
         # 10 AM to 5 PM is 7 hours, 1 PM is 3 hours in = 3/7 of day duration
@@ -239,6 +242,22 @@ class GameState:
         self.boss_fight_prompt_speed = 20.0  # chars per second (slower typing, longer prompt)
         self.boss_fight_prompt_stage = 0  # 0 = intro line, 1 = warning, 2 = ready to fight
         self.boss_fight_prompt_autoadvance_timer = 0.0  # seconds since intro prompt started
+        self.boss_victory_banner_timer = 0.0  # Duration to show post-win banner
+        self.boss_victory_banner_text = ""
+        self.boss_defeated = False
+        self.boss_defeat_exit_started = False
+        self.boss_defeat_exit_timer = 0.0
+        self.boss_defeat_exit_duration = 1.0
+        self.boss_exit_progress = 0.0
+        self.boss_defeat_flash_started = False
+        self.boss_defeat_flash_started = False
+        self.nuke_game_over_full = "Game over.\nThere's nothing left."
+        self.nuke_game_over_visible = ""
+        self.nuke_game_over_timer = 0.0
+        self.nuke_game_over_speed = 18.0
+        self.nuke_game_over_text_delay = 1.0  # seconds before text begins typing
+        self.nuke_game_over_fade_timer = 0.0
+        self.nuke_game_over_fade_duration = 1.2  # seconds to fully whiten the screen
         
         # Boss approaching orange circle
         self.boss_circle_position: pygame.Vector2 | None = None  # Position of orange circle
@@ -342,11 +361,44 @@ class GameState:
         self._update_slot_spin(dt)
         self._update_mystery_spin(dt)
         self._update_boss_fight_prompt(dt)
+        self._update_nuke_game_over_prompt(dt)
+        # Decay boss victory banner timer
+        if self.boss_victory_banner_timer > 0.0:
+            self.boss_victory_banner_timer = max(0.0, self.boss_victory_banner_timer - dt)
         # Decay hurt flashes
         if self.boss_hurt_flash_timer > 0.0:
             self.boss_hurt_flash_timer = max(0.0, self.boss_hurt_flash_timer - dt)
         if self.player_hurt_flash_timer > 0.0:
             self.player_hurt_flash_timer = max(0.0, self.player_hurt_flash_timer - dt)
+        # Handle boss defeat exit animation and flash before returning to gameplay
+        if self.game_state == "boss_fight" and self.boss_defeated:
+            if self.boss_defeat_exit_started:
+                self.boss_defeat_exit_timer += dt
+                self.boss_exit_progress = min(
+                    1.0,
+                    self.boss_defeat_exit_timer / max(0.0001, self.boss_defeat_exit_duration),
+                )
+                # Trigger final flash once boss fully exits
+                if (
+                    self.boss_exit_progress >= 1.0
+                    and not self.boss_defeat_flash_started
+                ):
+                    self.boss_defeat_flash_started = True
+                    self.boss_fight_show_flash = True
+                    self.boss_fight_flash_timer = 0.0
+                    self.boss_fight_flash_duration = 0.6
+            # After flash completes, return to gameplay
+            if (
+                self.boss_defeat_flash_started
+                and self.boss_exit_progress >= 1.0
+                and self.boss_fight_flash_timer >= self.boss_fight_flash_duration
+            ):
+                self.boss_defeated = False
+                self.boss_defeat_exit_started = False
+                self.boss_defeat_flash_started = False
+                self.boss_exit_progress = 0.0
+                self.game_state = "playing"
+                self._start_inshop_music()
         # Auto-advance boss prompt from intro to warning after a brief pause
         if self.game_state == "boss_fight" and self.boss_fight_prompt_stage == 0:
             self.boss_fight_prompt_autoadvance_timer += dt
@@ -557,6 +609,15 @@ class GameState:
                 # Return to playing
                 self.game_state = "playing"
                 
+        # Handle day over fade/animation progression (no gameplay updates)
+        if self.game_state == "day_over_animation":
+            if not self.video_playing and not self.day_over_video_done:
+                self.day_over_fade_timer += dt
+                if self.day_over_fade_timer >= self.day_over_fade_duration:
+                    self.day_over_fade_timer = self.day_over_fade_duration
+                    self.video_playing = True
+            return
+
         # Only update game logic if we're in a state that allows gameplay
         if self.game_state not in ("playing", "waiting_for_customers", "collection_time", "tax_man_notification", "boss_approaching"):
             # Video playback is handled in renderer, no need to update animation progress here
@@ -673,7 +734,10 @@ class GameState:
                 # Transition to animation state
                 self.game_state = "day_over_animation"
                 self.day_over_animation_progress = 0.0
-                self.video_playing = True  # Signal that video should start playing
+                # Start with fade; video begins after fade completes
+                self.video_playing = False
+                self.day_over_video_done = False
+                self.day_over_fade_timer = 0.0
                 
                 # Stop in-shop music
                 pygame.mixer.music.stop()
@@ -687,6 +751,13 @@ class GameState:
                     pygame.mixer.music.play()
                 except Exception as e:
                     print(f"Warning: Could not play day over music: {e}")
+        elif self.game_state == "day_over_animation":
+            # Run fade timer before video starts
+            if not self.video_playing:
+                self.day_over_fade_timer += dt
+                if self.day_over_fade_timer >= self.day_over_fade_duration:
+                    self.day_over_fade_timer = self.day_over_fade_duration
+                    self.video_playing = True
 
     def handle_event(self, event: pygame.event.Event, renderer=None) -> bool:
         """
@@ -698,6 +769,9 @@ class GameState:
         """
         if event.type == pygame.QUIT:
             return True
+        # Block all input during nuke game over
+        if self.game_state == "nuke_game_over":
+            return False
         elif event.type == pygame.MOUSEBUTTONDOWN:
             # Check if clicking on Venmo bubble in tax_man state
             if self.game_state == "tax_man" and renderer is not None:
@@ -857,6 +931,15 @@ class GameState:
                     self.boss_fight_flash_timer = 0.0
                     return False
             elif self.game_state == "boss_fight":
+                # If boss is defeated, only allow SPACE to advance the exit sequence
+                if self.boss_defeated:
+                    if event.key == pygame.K_SPACE:
+                        if not self.boss_defeat_exit_started:
+                            self.boss_defeat_exit_started = True
+                            self.boss_defeat_exit_timer = 0.0
+                            self.boss_exit_progress = 0.0
+                        return False
+                    return False
                 # Block inputs when not player's turn (unless resolving counter)
                 if not self.player_turn and not self.boss_counter_pending:
                     if event.key in (pygame.K_w, pygame.K_UP, pygame.K_s, pygame.K_DOWN, pygame.K_RETURN, pygame.K_SPACE):
@@ -953,7 +1036,9 @@ class GameState:
                     # Skip directly to day over animation
                     self.game_state = "day_over_animation"
                     self.day_over_animation_progress = 0.0
-                    self.video_playing = True
+                    self.video_playing = False
+                    self.day_over_video_done = False
+                    self.day_over_fade_timer = 0.0
                     # Play sound when entering animation state
                     if not self.sound_played and self.day_over_sound is not None:
                         try:
@@ -964,7 +1049,10 @@ class GameState:
             # Handle day over screen transitions
             # Note: Tax man menu is ONLY accessible from notification, not from day over
             if self.game_state == "day_over_animation":
-                # Any key press starts a new day (tax man is only accessible via notification)
+                # Block skipping while fade/video are running
+                if self.day_over_fade_timer < self.day_over_fade_duration or self.video_playing:
+                    return False
+                # Any key press starts a new day after animation finishes
                 self._start_new_day()
             elif self.game_state == "day_over":
                 # Legacy state - start a new day (tax man is only accessible via notification)
@@ -1188,6 +1276,8 @@ class GameState:
         self.day_over_animation_progress = 0.0
         self.sound_played = False
         self.video_playing = False  # Reset video playing state
+        self.day_over_fade_timer = 0.0
+        self.day_over_video_done = False
         # Reset tax man menu state
         self.tax_man_menu_selection = 0
         self.tax_man_ai_response = None
@@ -1295,6 +1385,33 @@ class GameState:
             {"label": "Pay", "enabled": False},
         ]
 
+    def _stop_boss_audio(self) -> None:
+        """Stop any boss-related music or intro sounds."""
+        if self.tax_man_music_sound:
+            try:
+                self.tax_man_music_sound.stop()
+            except Exception:
+                pass
+        if self.boss_intro_sound:
+            try:
+                self.boss_intro_sound.stop()
+            except Exception:
+                pass
+        try:
+            pygame.mixer.music.stop()
+        except Exception:
+            pass
+    
+    def _start_inshop_music(self) -> None:
+        """Start looping in-shop music if available."""
+        if not self.inshop_music_path:
+            return
+        try:
+            pygame.mixer.music.load(self.inshop_music_path)
+            pygame.mixer.music.play(-1)  # Loop indefinitely
+        except Exception as e:
+            print(f"Warning: Could not load/play in-shop music: {e}")
+
     def _apply_boss_damage(self, amount: int) -> None:
         """Apply damage to boss and trigger hurt flash."""
         self.boss_health = max(0, self.boss_health - max(0, amount))
@@ -1312,18 +1429,17 @@ class GameState:
     def _handle_boss_defeat(self) -> None:
         """Handle player victory over the boss."""
         self.collected_coins += 100
-        self.set_boss_fight_prompt("You win! +100 cash.", speed=30.0)
+        self.set_boss_fight_prompt("You win! +100 cash.\nPress SPACE to continue.", speed=26.0)
         self.player_turn = False
         self.boss_counter_pending = False
+        self.boss_defeated = True
+        self.boss_defeat_exit_started = False
+        self.boss_defeat_exit_timer = 0.0
+        self.boss_exit_progress = 0.0
+        self.boss_defeat_flash_started = False
         # Stop boss/battle music
-        if self.tax_man_music_sound:
-            self.tax_man_music_sound.stop()
-        try:
-            pygame.mixer.music.stop()
-        except Exception:
-            pass
-        # Exit boss fight back to playing
-        self.game_state = "playing"
+        self._stop_boss_audio()
+        # Keep in boss fight state until exit animation completes
 
     def _handle_player_defeat(self) -> None:
         """Handle player defeat."""
@@ -1333,23 +1449,14 @@ class GameState:
             self.set_boss_fight_prompt(f"Paid double ({due}). You survive.", speed=30.0)
             self.player_turn = False
             self.boss_counter_pending = False
-            if self.tax_man_music_sound:
-                self.tax_man_music_sound.stop()
-            try:
-                pygame.mixer.music.stop()
-            except Exception:
-                pass
+            self._stop_boss_audio()
             self.game_state = "playing"
+            self._start_inshop_music()
         else:
             self.set_boss_fight_prompt("Out of cash. Game over.", speed=30.0)
             self.player_turn = False
             self.boss_counter_pending = False
-            if self.tax_man_music_sound:
-                self.tax_man_music_sound.stop()
-            try:
-                pygame.mixer.music.stop()
-            except Exception:
-                pass
+            self._stop_boss_audio()
             self.game_state = "day_over"
 
     def _enter_boss_fight(self) -> None:
@@ -1357,12 +1464,22 @@ class GameState:
         self.boss_darkening = False
         self.boss_dark_timer = 0.0
         self.game_state = "boss_fight"
+        # Reset health and hurt flashes at the start of each battle
+        self.boss_health = 100
+        self.player_health = 100
+        self.boss_hurt_flash_timer = 0.0
+        self.player_hurt_flash_timer = 0.0
         self.boss_fight_show_flash = True
         self.boss_fight_flash_timer = 0.0
         self.boss_fight_menu_mode = "root"
         self.boss_fight_menu_selection = 0
         self.boss_fight_prompt_stage = 0
         self.boss_fight_prompt_autoadvance_timer = 0.0
+        self.boss_defeated = False
+        self.boss_defeat_exit_started = False
+        self.boss_defeat_exit_timer = 0.0
+        self.boss_exit_progress = 0.0
+        self.boss_defeat_flash_started = False
         self.set_boss_fight_prompt("Tax Dude appeared out the wild")
         self.player_turn = True
         self.boss_counter_pending = False
@@ -1371,16 +1488,17 @@ class GameState:
             pygame.mixer.music.stop()
         except Exception:
             pass
+        # Stop any texting music; boss fight should use intro only
+        if self.tax_man_music_sound:
+            try:
+                self.tax_man_music_sound.stop()
+            except Exception:
+                pass
         if self.boss_intro_sound:
             try:
                 self.boss_intro_sound.play()
             except Exception as e:
                 print(f"Warning: Could not play boss intro: {e}")
-        if self.tax_man_music_sound:
-            try:
-                self.tax_man_music_sound.play(-1)
-            except Exception as e:
-                print(f"Warning: Could not play boss music: {e}")
 
     def _execute_boss_fight_action(self, selection: int) -> None:
         """Resolve a player-selected boss fight action."""
@@ -1413,11 +1531,18 @@ class GameState:
             self.boss_fight_show_flash = True
             self.boss_fight_flash_timer = 0.0
             self.boss_fight_flash_duration = 3.0
-            if self.tax_man_music_sound:
-                self.tax_man_music_sound.stop()
-            pygame.mixer.music.stop()
-            # Transition to day over animation to lock progression
-            self.game_state = "day_over_animation"
+            self._stop_boss_audio()
+            # Enter irreversible game-over state with white screen and disabled input
+            self.game_state = "nuke_game_over"
+            self.nuke_game_over_full = "Game over.\nThere's nothing left."
+            self.nuke_game_over_visible = ""
+            self.nuke_game_over_timer = 0.0
+            self.nuke_game_over_fade_timer = 0.0
+            # Clear any remaining prompts/menu state
+            self.boss_fight_menu_mode = "root"
+            self.boss_fight_menu_selection = 0
+            self.boss_fight_prompt_stage = 0
+            self.boss_fight_prompt_autoadvance_timer = 0.0
             return
 
         # Player attack
@@ -1452,6 +1577,25 @@ class GameState:
         self.boss_fight_prompt_timer += dt
         chars = int(self.boss_fight_prompt_timer * self.boss_fight_prompt_speed)
         self.boss_fight_prompt_visible = self.boss_fight_prompt_full[:chars]
+
+    def _update_nuke_game_over_prompt(self, dt: float) -> None:
+        """Type out the nuke game-over message."""
+        if self.game_state != "nuke_game_over":
+            return
+        # Advance fade timer for the whiteout effect
+        self.nuke_game_over_fade_timer += dt
+        # Advance timer used for text typing (after a delay)
+        if not self.nuke_game_over_full:
+            self.nuke_game_over_visible = ""
+            return
+        self.nuke_game_over_timer += dt
+        # Delay before starting to type for dramatic pause
+        if self.nuke_game_over_timer < self.nuke_game_over_text_delay:
+            self.nuke_game_over_visible = ""
+            return
+        typing_time = self.nuke_game_over_timer - self.nuke_game_over_text_delay
+        chars = int(typing_time * self.nuke_game_over_speed)
+        self.nuke_game_over_visible = self.nuke_game_over_full[:chars]
 
     def _get_player_tile(self) -> str:
         """Return the tile code currently under the player."""

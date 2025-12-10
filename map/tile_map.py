@@ -59,10 +59,16 @@ OFFICE_MAP = [
 class TileMap:
     """Manages the tile-based map."""
 
-    def __init__(self, map_data: list[str] | None = None) -> None:
+    def __init__(self, map_data: list[str] | None = None, name: str = "store") -> None:
+        """
+        Args:
+            map_data: Layout data; defaults to store map.
+            name: Logical name for the map (e.g., "store", "office").
+        """
         self.map_data = map_data or STORE_MAP
         self.rows = len(self.map_data)
         self.cols = len(self.map_data[0]) if self.map_data else 0
+        self.name = name
 
     def tile_at(self, col: int, row: int) -> str:
         """Get tile code at given column and row."""
@@ -131,12 +137,15 @@ class TileMap:
                     else:
                         color = COLOR_SHELF
                         pygame.draw.rect(surface, color, rect)
+                    pygame.draw.rect(surface, (0, 0, 0), rect, 3)
                 elif tile == TILE_DOOR:
                     color = COLOR_DOOR
                     pygame.draw.rect(surface, color, rect)
+                    pygame.draw.rect(surface, (0, 0, 0), rect, 3)
                 elif tile == TILE_OFFICE_DOOR:
                     color = COLOR_OFFICE_DOOR
                     pygame.draw.rect(surface, color, rect)
+                    pygame.draw.rect(surface, (0, 0, 0), rect, 3)
                 elif tile == TILE_COUNTER:
                     # Use counter texture if available, otherwise fall back to color
                     if counter_texture is not None:
@@ -144,6 +153,7 @@ class TileMap:
                     else:
                         color = COLOR_COUNTER
                         pygame.draw.rect(surface, color, rect)
+                    pygame.draw.rect(surface, (0, 0, 0), rect, 3)
                 elif tile == TILE_NODE:
                     # Nodes are invisible - render as floor
                     color = COLOR_FLOOR
@@ -160,6 +170,7 @@ class TileMap:
                     else:
                         color = COLOR_COMPUTER
                         pygame.draw.rect(surface, color, rect)
+                    pygame.draw.rect(surface, (0, 0, 0), rect, 3)
                 elif tile in [TILE_ACTIVATION, TILE_ACTIVATION_1, TILE_ACTIVATION_2, TILE_ACTIVATION_3]:
                     # Activation tiles are same color as floor (invisible)
                     color = COLOR_FLOOR

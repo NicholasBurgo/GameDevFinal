@@ -617,10 +617,9 @@ class LitterCustomer:
         return False
 
     def draw(self, surface: pygame.Surface) -> None:
-        pygame.draw.circle(
-            surface,
-            self.color,
-            (int(self.position.x), int(self.position.y)),
-            self.radius,
-        )
+        # Draw outline behind customer body for visibility
+        center = (int(self.position.x), int(self.position.y))
+        outline_radius = self.radius + 5
+        pygame.draw.circle(surface, (0, 0, 0), center, outline_radius)
+        pygame.draw.circle(surface, self.color, center, self.radius)
 
